@@ -3,7 +3,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { addToCart, getCart } = require("../src/cart");
 const { createOrder, canTransition, changeStatus } = require("../src/order");
-const { createFakeClock } = require("../src/testkit");
+const { createFakeClock, seedOrder } = require("../src/testkit");
 const { expectCode, fresh } = require("./_helpers");
 
 test("[TC-O-01] 두 상품 주문 성공", () => {
@@ -306,4 +306,106 @@ test("[TC-O-18] 부족 상품 두 개를 shortages에 장바구니 순서대로 
   assert.equal(ctx.store.orders.size, 0);
 });
 
-test.todo("[TC-O-19] TODO: 상태 전이표 전체(허용 · 거부)와 오류 코드");
+test("[TC-O-19] canTransition의 전체 상태 조합 기대값 표", () => {
+  const states = ["PENDING_PAYMENT", "PAID", "PREPARING", "SHIPPING", "DELIVERED", "CANCELED"];
+  const expectedTable = [
+    { from: "PENDING_PAYMENT", expected: [false, true, false, false, false, true] },
+    { from: "PAID", expected: [false, false, true, false, false, true] },
+    { from: "PREPARING", expected: [false, false, false, true, false, false] },
+    { from: "SHIPPING", expected: [false, false, false, false, true, false] },
+    { from: "DELIVERED", expected: [false, false, false, false, false, false] },
+    { from: "CANCELED", expected: [false, false, false, false, false, false] },
+  ];
+
+  for (const { from, expected } of expectedTable) {
+    for (const [index, to] of states.entries()) {
+      assert.equal(canTransition(from, to), expected[index], `${from} -> ${to}`);
+    }
+  }
+});
+
+test("[TC-O-20] changeStatus는 허용된 상태 전이를 적용한다", () => {
+  const allowedTransitions = [
+    ["PENDING_PAYMENT", "PAID"],
+    ["PENDING_PAYMENT", "CANCELED"],
+    ["PAID", "PREPARING"],
+    ["PAID", "CANCELED"],
+    ["PREPARING", "SHIPPING"],
+    ["SHIPPING", "DELIVERED"],
+  ];
+
+  for (const [from, to] of allowedTransitions) {
+    const ctx = fresh();
+    const order = seedOrder(ctx, { status: from, deductStock: false });
+    const updatedOrder = changeStatus(ctx, order.id, to);
+    const message = `${from} -> ${to}`;
+
+    assert.equal(updatedOrder.status, to, message);
+    assert.equal(ctx.store.orders.get(order.id).status, to, message);
+  }
+});
+
+test("[TC-O-21] changeStatus는 허용되지 않은 모든 전이를 거부하고 상태를 유지한다", () => {
+  const rejectedTransitions = [
+    ["PENDING_PAYMENT", "PENDING_PAYMENT"],
+    ["PENDING_PAYMENT", "PREPARING"],
+    ["PENDING_PAYMENT", "SHIPPING"],
+    ["PENDING_PAYMENT", "DELIVERED"],
+    ["PAID", "PENDING_PAYMENT"],
+    ["PAID", "PAID"],
+    ["PAID", "SHIPPING"],
+    ["PAID", "DELIVERED"],
+    ["PREPARING", "PENDING_PAYMENT"],
+    ["PREPARING", "PAID"],
+    ["PREPARING", "PREPARING"],
+    ["PREPARING", "DELIVERED"],
+    ["PREPARING", "CANCELED"],
+    ["SHIPPING", "PENDING_PAYMENT"],
+    ["SHIPPING", "PAID"],
+    ["SHIPPING", "PREPARING"],
+    ["SHIPPING", "SHIPPING"],
+    ["SHIPPING", "CANCELED"],
+    ["DELIVERED", "PENDING_PAYMENT"],
+    ["DELIVERED", "PAID"],
+    ["DELIVERED", "PREPARING"],
+    ["DELIVERED", "SHIPPING"],
+    ["DELIVERED", "DELIVERED"],
+    ["DELIVERED", "CANCELED"],
+    ["CANCELED", "PENDING_PAYMENT"],
+    ["CANCELED", "PAID"],
+    ["CANCELED", "PREPARING"],
+    ["CANCELED", "SHIPPING"],
+    ["CANCELED", "DELIVERED"],
+    ["CANCELED", "CANCELED"],
+  ];
+
+  for (const [from, to] of rejectedTransitions) {
+    const ctx = fresh();
+    const order = seedOrder(ctx, { status: from, deductStock: false });
+    const message = `${from} -> ${to}`;
+    const error = expectCode(() => changeStatus(ctx, order.id, to), "INVALID_STATE");
+
+    assert.deepEqual(error.details, { from, to }, message);
+    assert.equal(ctx.store.orders.get(order.id).status, from, message);
+  }
+});
+
+test("[TC-O-22] 존재하지 않는 주문 상태 변경은 NOT_FOUND다", () => {
+  const ctx = fresh();
+
+  expectCode(() => changeStatus(ctx, "ORD-MISSING", "PAID"), "NOT_FOUND");
+});
+
+test("[TC-O-23] changeStatus 반환 주문을 수정해도 저장 주문은 변하지 않는다", () => {
+  const ctx = fresh();
+  const order = seedOrder(ctx, { status: "PENDING_PAYMENT", deductStock: false });
+  const updatedOrder = changeStatus(ctx, order.id, "PAID");
+  updatedOrder.status = "CANCELED";
+  updatedOrder.address = "변경된 주소";
+  updatedOrder.items[0].quantity = 99;
+
+  const storedOrder = ctx.store.orders.get(order.id);
+  assert.equal(storedOrder.status, "PAID");
+  assert.equal(storedOrder.address, "서울시 중구 세종대로 110");
+  assert.equal(storedOrder.items[0].quantity, 1);
+});
