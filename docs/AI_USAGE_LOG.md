@@ -100,7 +100,7 @@
 - 에이전트의 실수 · 약한 테스트 · 불필요한 변경 (있다면):
   - 약한 테스트: 성공 경로의 paidAt은 Object.hasOwn으로만 확인(값이 undefined여도 통과), 규칙 9는 card·number·method 세 이름만 확인
   - 불필요한 변경: 파일 위쪽 주석(모의 PG: failNextCharge / timeoutNextCharge / charges)이 바뀜
-- 사람이 확인한 범위 (일부러 틀린 값으로 실패시켜 본 것, 직접 실행한 것): 계약서 3장 줄 번호(104, 106, 112~115, 118)와 Copilot의 근거 표기를 직접 대조. 금액 15,000 × 2 = 30,000을 직접 계산. npm test 77개 통과(실패 0), git status로 src·ai_tests 변경 없음 확인. [ ] 김윤영이 일부러 틀린 값으로 실패 확인한 케이스와 결과:
+- 사람이 확인한 범위 (일부러 틀린 값으로 실패시켜 본 것, 직접 실행한 것): 계약서 3장 줄 번호(104, 106, 112~115, 118)와 Copilot의 근거 표기를 직접 대조. 금액 15,000 × 2 = 30,000을 직접 계산. npm test 77개 통과(실패 0), git status로 src·ai_tests 변경 없음 확인. [x] 김윤영이 일부러 틀린 값으로 실패 확인한 케이스와 결과: "LIMIT_EXCEEDED"(details.reason)를 다른 값으로, failureReason 기대값을 다른 값으로, 기록 status의 "FAILED"를 "SUCCEEDED"로, 주문 상태 "PENDING_PAYMENT"를 "PAID"로, attempt를 1에서 2로, PG 호출 횟수 1을 2로
 - 고친 점 / 다음에 바꿀 프롬프트 규칙: 요청 한 번에는 경로 하나만. 이미 쓴 테스트의 단언은 건드리지 말라고 매번 명시. 모의 PG는 setTimeout 없이 즉시 응답하는 스텁을 쓰도록 요청에 넣기
 - 재시도 횟수: 목록 재요청 1회(성공 경로), 코드 작성 1회
 
