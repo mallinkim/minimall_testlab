@@ -6,9 +6,10 @@ const { fresh, expectCode, expectRejectCode } = require("./_helpers");
 const { addToCart, changeQuantity, removeItem, getCart } = require("../src/cart");
 const { createOrder, changeStatus } = require("../src/order");
 const { getOrderDetail, listOrders } = require("../src/orderQuery");
-const { seedOrder } = require("../src/testkit");
+const { seedOrder, createFakeClock } = require("../src/testkit");
 const { cancelOrder } = require("../src/cancel");
 const { payOrder } = require("../src/payment");
+const { expirePendingOrders } = require("../src/expiry");
 
 test("[TC-R-01] P1 한 개를 담으면 수량과 금액을 정확히 반환한다", () => {
   // 요청 수량과 장바구니 금액이 잘못 계산되는 결함을 잡는다.
@@ -348,4 +349,137 @@ test("[TC-R-29] 허용된 상태 변경은 반환 주문에 새 상태를 반영
 
   const changed = changeStatus(ctx, order.id, "PAID");
   assert.equal(changed.status, "PAID");
+});
+
+test("[TC-R-30] 주문 상세는 주문 시점 상품 정보와 금액을 반환한다", () => {
+  // 주문 상세의 수량·단가·항목 금액·합계가 계약과 다른 결함을 잡는다.
+  const clock = createFakeClock();
+  const ctx = fresh({ clock });
+  addToCart(ctx, "u1", "P1", 2);
+  const order = createOrder(ctx, "u1", { address: "서울시" });
+
+  assert.deepEqual(getOrderDetail(ctx, "u1", order.id), {
+    id: "ORD-0001",
+    status: "PENDING_PAYMENT",
+    createdAt: "2026-10-28T09:00:00.000Z",
+    address: "서울시",
+    items: [{
+      productId: "P1",
+      name: "무선 마우스",
+      unitPrice: 15000,
+      quantity: 2,
+      lineTotal: 30000,
+    }],
+    totalAmount: 30000,
+  });
+});
+
+test("[TC-R-31] 같은 시각의 주문 목록은 주문번호 역순으로 페이지를 나눈다", () => {
+  // 기본 페이지 경계 및 동일 시각 주문의 정렬 순서 오류를 잡는다.
+  const clock = createFakeClock();
+  const ctx = fresh({ clock });
+  for (let i = 0; i < 11; i += 1) {
+    seedOrder(ctx, { userId: "u1", deductStock: false });
+  }
+
+  const firstPage = listOrders(ctx, "u1");
+  assert.equal(firstPage.total, 11);
+  assert.equal(firstPage.pageSize, 10);
+  assert.deepEqual(firstPage.items.map((item) => item.orderId), [
+    "ORD-0011",
+    "ORD-0010",
+    "ORD-0009",
+    "ORD-0008",
+    "ORD-0007",
+    "ORD-0006",
+    "ORD-0005",
+    "ORD-0004",
+    "ORD-0003",
+    "ORD-0002",
+  ]);
+
+  const secondPage = listOrders(ctx, "u1", { page: 2 });
+  assert.equal(secondPage.total, 11);
+  assert.deepEqual(secondPage.items.map((item) => item.orderId), ["ORD-0001"]);
+});
+
+test("[TC-R-32] 여러 상품 주문의 대표 상품명은 첫 상품명 외 나머지 종류 수다", () => {
+  // 여러 상품 주문에서 대표 상품명의 형식 또는 종류 수가 잘못되는 결함을 잡는다.
+  const ctx = fresh();
+  seedOrder(ctx, { items: [["P1", 1], ["P2", 1]] });
+
+  const orders = listOrders(ctx, "u1");
+  assert.equal(orders.items[0].representativeName, "무선 마우스 외 1건");
+});
+
+test("[TC-R-33] 29분 59.999초 지난 주문은 자동 취소되지 않는다", () => {
+  // 30분 직전 주문을 조기 만료시키는 경계 결함을 잡는다.
+  const clock = createFakeClock();
+  const ctx = fresh({ clock });
+  const order = seedOrder(ctx, { items: [["P1", 1]] });
+  clock.advance(1799999);
+
+  assert.deepEqual(expirePendingOrders(ctx, {}), []);
+  assert.equal(getOrderDetail(ctx, "u1", order.id).status, "PENDING_PAYMENT");
+  const remaining = addToCart(ctx, "u2", "P1", 9);
+  assert.equal(remaining.items[0].quantity, 9);
+  const noExtraStock = expectCode(() => addToCart(ctx, "u2", "P1", 1), "OUT_OF_STOCK");
+  assert.equal(noExtraStock.details.maxAddable, 0);
+});
+
+test("[TC-R-34] 정확히 30분 지난 주문은 취소되고 재고가 복원된다", () => {
+  // 만료 기준의 정확한 경계에서 주문 취소와 재고 복원이 빠지는 결함을 잡는다.
+  const clock = createFakeClock();
+  const ctx = fresh({ clock });
+  const order = seedOrder(ctx, { items: [["P1", 1]] });
+  clock.advance(1800000);
+
+  assert.deepEqual(expirePendingOrders(ctx, {}), ["ORD-0001"]);
+  assert.equal(getOrderDetail(ctx, "u1", order.id).status, "CANCELED");
+  const restored = addToCart(ctx, "u2", "P1", 10);
+  assert.equal(restored.items[0].quantity, 10);
+});
+
+test("[TC-R-35] 각 컨텍스트의 첫 주문은 ORD-0001이고 장바구니는 비워진다", () => {
+  // 컨텍스트 간 상태 공유 또는 주문 뒤 장바구니 비우기 누락을 잡는다.
+  const firstCtx = fresh();
+  const secondCtx = fresh();
+
+  addToCart(firstCtx, "u1", "P1", 1);
+  addToCart(secondCtx, "u1", "P1", 1);
+  const firstOrder = createOrder(firstCtx, "u1", { address: "서울시" });
+  const secondOrder = createOrder(secondCtx, "u1", { address: "서울시" });
+
+  assert.equal(firstOrder.id, "ORD-0001");
+  assert.equal(secondOrder.id, "ORD-0001");
+  assert.deepEqual(getCart(firstCtx, "u1").items, []);
+  assert.deepEqual(getCart(secondCtx, "u1").items, []);
+});
+
+test("[TC-R-36] 다른 사용자의 주문 결제는 NOT_FOUND이고 PG를 호출하지 않는다", async () => {
+  // 다른 사용자의 주문을 결제하거나 주문 상태를 바꾸는 권한 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx, { userId: "owner", status: "PENDING_PAYMENT" });
+
+  await expectRejectCode(() => payOrder(ctx, "intruder", order.id), "NOT_FOUND");
+  assert.equal(ctx.pg.charges.length, 0);
+  assert.equal(getOrderDetail(ctx, "owner", order.id).status, "PENDING_PAYMENT");
+});
+
+test("[TC-R-37] 다른 사용자의 주문 취소는 NOT_FOUND이고 환불·재고를 변경하지 않는다", async () => {
+  // 다른 사용자가 주문을 취소·환불하거나 재고를 복원하는 권한 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx, {
+    userId: "owner",
+    status: "PAID",
+    items: [["P1", 1]],
+  });
+  const before = expectCode(() => addToCart(ctx, "probe", "P1", 10), "OUT_OF_STOCK");
+  assert.equal(before.details.maxAddable, 9);
+
+  await expectRejectCode(() => cancelOrder(ctx, "intruder", order.id), "NOT_FOUND");
+  assert.equal(ctx.pg.refunds.length, 0);
+  assert.equal(getOrderDetail(ctx, "owner", order.id).status, "PAID");
+  const after = expectCode(() => addToCart(ctx, "probe", "P1", 10), "OUT_OF_STOCK");
+  assert.equal(after.details.maxAddable, 9);
 });
