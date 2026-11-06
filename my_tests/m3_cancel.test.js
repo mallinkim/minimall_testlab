@@ -165,7 +165,51 @@ test("[TC-X-05] 환불 실패 뒤 재시도 성공 시 주문·결제·재고가
   assert.equal(result.order.status, "CANCELED");
 });
 
-test.todo("[TC-X-06] TODO: 환불 시간 초과(예외)");
+// 계약 근거: API_CONTRACT.md 규칙 4 (124, 132), SRS US-10 (57).
+// 잡는 결함: 환불 예외를 성공으로 처리하거나 reason을 PG_ERROR로 고정하지 않는 결함
+test("[TC-X-06] 환불 시간 초과 시 PG_ERROR와 실패 상태 및 미복원 재고를 확인한다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      new Error("PG_TIMEOUT"),
+      { ok: true, refundId: "RF-X-06-UNEXPECTED" },
+    ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+  });
+  const stockBeforeOrder = ctx.store.products.get("P1").stock;
+  const order = seedOrder(ctx, { items: [["P1", 2]], status: "PAID" });
+  const stockAfterOrder = ctx.store.products.get("P1").stock;
+  const payment = ctx.store.payments.get(order.id)[0];
+
+  assert.equal(stockBeforeOrder, 10);
+  assert.equal(stockAfterOrder, 8);
+  assert.equal(typeof payment.txId, "string");
+  assert.notEqual(payment.txId, "");
+  assert.equal(payment.amount, 30000);
+
+  const error = await expectRejectCode(
+    () => cancelOrder(ctx, "u1", order.id),
+    "REFUND_FAILED",
+  );
+  const storedOrder = ctx.store.orders.get(order.id);
+  const storedPayment = ctx.store.payments.get(order.id)[0];
+
+  assert.equal(error.details.reason, "PG_ERROR");
+  assert.notEqual(error.details.reason, "PG_TIMEOUT");
+  assert.equal(ctx.pg.refunds.length, 1);
+  assert.equal(ctx.pg.refunds[0].amount, payment.amount);
+  assert.equal(ctx.pg.refunds[0].amount, 30000);
+  assert.equal(ctx.pg.refunds[0].txId, payment.txId);
+  assert.equal(storedPayment.refund.status, "FAILED");
+  // 팀 가정: 계약은 예외 시 refund.reason의 구체적인 값을 정하지 않는다.
+  assert.equal(storedPayment.refund.reason, "PG_ERROR");
+  // 팀 가정: 계약은 refund.at의 형식을 정하지 않으므로 존재 여부만 확인한다.
+  assert.equal(Object.hasOwn(storedPayment.refund, "at"), true);
+  assert.equal(storedOrder.status, "PAID");
+  assert.equal(ctx.store.products.get("P1").stock, 8);
+  // 팀 가정: 실패 규칙은 결제 status를 명시적으로 바꾸지 않는다고 본다.
+  assert.notEqual(storedPayment.status, "REFUNDED");
+});
+
 test.todo("[TC-X-07] TODO: 취소할 수 없는 상태");
 test.todo("[TC-X-08] TODO: 남의 주문 · 없는 주문");
 test.todo("[TC-X-09] TODO: 동시 취소 — 환불과 재고 복원은 한 번");
