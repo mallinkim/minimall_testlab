@@ -18,6 +18,22 @@ function createImmediateRefundPg(responses) {
   return pg;
 }
 
+function createControlledRefundPg(response) {
+  let releaseResponse;
+  const responseGate = new Promise((resolve) => {
+    releaseResponse = resolve;
+  });
+  const pg = {
+    refunds: [],
+    async refund(request) {
+      pg.refunds.push({ ...request });
+      await responseGate;
+      return response;
+    },
+  };
+  return { pg, release: () => releaseResponse() };
+}
+
 test("[TC-X-01] 결제 전 주문을 취소하면 PG 호출 없이 CANCELED 가 되고 재고가 복원된다", async () => {
   const ctx = fresh();
   const o = seedOrder(ctx, { items: [["P1", 3]] }); // 재고 10 -> 7
@@ -335,5 +351,185 @@ test("[TC-X-07d] CANCELED 주문 재취소는 거부되고 주문·재고를 유
   assert.equal(ctx.store.products.get("P1").stock, stockBeforeSecondCancel);
 });
 
-test.todo("[TC-X-08] TODO: 남의 주문 · 없는 주문");
-test.todo("[TC-X-09] TODO: 동시 취소 — 환불과 재고 복원은 한 번");
+// 계약 근거: API_CONTRACT.md 공통 규칙 (12, 15, 24), §4 규칙 1 (127).
+test("[TC-X-08a] 남의 PENDING_PAYMENT 주문 취소는 NOT_FOUND이고 상태를 바꾸지 않는다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: true, refundId: "RF-X-08A-UNEXPECTED" },
+    ]),
+  });
+  const order = seedOrder(ctx, {
+    userId: "owner",
+    status: "PENDING_PAYMENT",
+    items: [["P1", 2]],
+  });
+  const ordersBefore = structuredClone(ctx.store.orders);
+  const paymentsBefore = structuredClone(ctx.store.payments);
+  const stockBefore = ctx.store.products.get("P1").stock;
+
+  assert.equal(order.status, "PENDING_PAYMENT");
+  assert.equal(stockBefore, 8);
+
+  await expectRejectCode(
+    () => cancelOrder(ctx, "intruder", order.id),
+    "NOT_FOUND",
+  );
+
+  // 팀 가정: 계약은 권한 거부 시 주문·결제 저장 방식과 부수 상태 불변을 따로 규정하지 않는다.
+  assert.equal(ctx.pg.refunds.length, 0);
+  assert.deepEqual(ctx.store.orders, ordersBefore);
+  assert.deepEqual(ctx.store.payments, paymentsBefore);
+  assert.equal(ctx.store.products.get("P1").stock, stockBefore);
+});
+
+// 계약 근거: API_CONTRACT.md 공통 규칙 (12, 15, 24), §4 규칙 1 (127).
+test("[TC-X-08b] 남의 PAID 주문 취소는 NOT_FOUND이고 결제 기록을 바꾸지 않는다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: true, refundId: "RF-X-08B-UNEXPECTED" },
+    ]),
+  });
+  const order = seedOrder(ctx, {
+    userId: "owner",
+    status: "PAID",
+    items: [["P1", 2]],
+  });
+  const ordersBefore = structuredClone(ctx.store.orders);
+  const paymentsBefore = structuredClone(ctx.store.payments);
+  const paymentBefore = structuredClone(ctx.store.payments.get(order.id));
+  const stockBefore = ctx.store.products.get("P1").stock;
+
+  assert.equal(order.status, "PAID");
+  assert.equal(stockBefore, 8);
+  assert.equal(Object.hasOwn(paymentBefore[0], "refund"), false);
+
+  await expectRejectCode(
+    () => cancelOrder(ctx, "intruder", order.id),
+    "NOT_FOUND",
+  );
+
+  const paymentAfter = ctx.store.payments.get(order.id);
+  // 팀 가정: 계약은 권한 거부 시 주문·결제 저장 방식과 부수 상태 불변을 따로 규정하지 않는다.
+  assert.equal(ctx.pg.refunds.length, 0);
+  assert.deepEqual(ctx.store.orders, ordersBefore);
+  assert.deepEqual(ctx.store.payments, paymentsBefore);
+  assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+  assert.equal(ctx.store.products.get("P1").stock, 8);
+  assert.equal(Object.hasOwn(paymentAfter[0], "refund"), false);
+});
+
+// 계약 근거: API_CONTRACT.md 공통 규칙 (12, 24).
+test("[TC-X-08c] 없는 주문 취소는 NOT_FOUND이고 저장소 상태를 바꾸지 않는다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: true, refundId: "RF-X-08C-UNEXPECTED" },
+    ]),
+  });
+  const orderId = "ORD-9999";
+
+  assert.equal(ctx.store.orders.has(orderId), false);
+  const ordersBefore = structuredClone(ctx.store.orders);
+  const paymentsBefore = structuredClone(ctx.store.payments);
+  const stockBefore = ctx.store.products.get("P1").stock;
+
+  await expectRejectCode(
+    () => cancelOrder(ctx, "u1", orderId),
+    "NOT_FOUND",
+  );
+
+  // 팀 가정: 계약은 없는 주문 거부 시 전체 저장소와 재고 불변을 따로 규정하지 않는다.
+  assert.equal(ctx.pg.refunds.length, 0);
+  assert.deepEqual(ctx.store.orders, ordersBefore);
+  assert.deepEqual(ctx.store.payments, paymentsBefore);
+  assert.equal(ctx.store.products.get("P1").stock, stockBefore);
+});
+
+// 계약 근거: API_CONTRACT.md §4 환불 PG 설명 (124), 규칙 3-4 (130-131), 규칙 5 (133), 공통 규칙 (12).
+// 팀 가정: 각 호출은 성공(CANCELED) 또는 INVALID_STATE로 끝나며, 적어도 한 호출은 성공한다.
+// 잡는 결함: 동시 취소가 환불을 중복 호출하거나 재고를 두 번 복원하는 결함
+test("[TC-X-09a] 같은 PAID 주문 동시 취소는 환불과 재고 복원을 한 번만 한다", async () => {
+  const controlledPg = createControlledRefundPg({
+    ok: true,
+    refundId: "RF-X-09A",
+  });
+  const ctx = fresh({
+    pg: controlledPg.pg,
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+  });
+  const stockBeforeOrder = ctx.store.products.get("P1").stock;
+  const order = seedOrder(ctx, { items: [["P1", 2]], status: "PAID" });
+  const payment = ctx.store.payments.get(order.id)[0];
+
+  assert.equal(stockBeforeOrder, 10);
+  assert.equal(ctx.store.products.get("P1").stock, 8);
+
+  const firstCall = cancelOrder(ctx, "u1", order.id);
+  const secondCall = cancelOrder(ctx, "u1", order.id);
+  const settledCallsPromise = Promise.allSettled([firstCall, secondCall]);
+  let settledCalls;
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(ctx.pg.refunds.length, 1);
+  } finally {
+    controlledPg.release();
+    settledCalls = await settledCallsPromise;
+  }
+
+  assert.equal(ctx.pg.refunds.length, 1);
+  assert.equal(ctx.pg.refunds[0].amount, 30000);
+  assert.equal(ctx.pg.refunds[0].amount, payment.amount);
+  assert.equal(ctx.pg.refunds[0].txId, payment.txId);
+
+  const fulfilledCalls = settledCalls.filter((result) => result.status === "fulfilled");
+  assert.equal(fulfilledCalls.length >= 1, true);
+  for (const result of settledCalls) {
+    if (result.status === "fulfilled") {
+      assert.equal(result.value.order.status, "CANCELED");
+    } else {
+      assert.equal(result.reason.code, "INVALID_STATE");
+    }
+  }
+
+  assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+  // 취소 전 8개, 한 번 복원하면 10개이며 두 번 복원하면 12개다.
+  assert.equal(ctx.store.products.get("P1").stock, 10);
+  const storedPayment = ctx.store.payments.get(order.id)[0];
+  assert.equal(storedPayment.status, "REFUNDED");
+  assert.equal(storedPayment.refund.status, "SUCCEEDED");
+});
+
+// 계약 근거: API_CONTRACT.md §4 규칙 3 (129), 규칙 5 (133), 공통 규칙 (12).
+// 팀 가정: 각 호출은 성공(CANCELED) 또는 INVALID_STATE로 끝나며, 적어도 한 호출은 성공한다.
+// 잡는 결함: 동시 PENDING_PAYMENT 취소가 재고를 두 번 복원하는 결함
+test("[TC-X-09b] 같은 PENDING_PAYMENT 주문 동시 취소는 재고를 한 번만 복원한다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: true, refundId: "RF-X-09B-UNEXPECTED" },
+    ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+  });
+  const stockBeforeOrder = ctx.store.products.get("P1").stock;
+  const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+  assert.equal(stockBeforeOrder, 10);
+  assert.equal(ctx.store.products.get("P1").stock, 8);
+
+  const firstCall = cancelOrder(ctx, "u1", order.id);
+  const secondCall = cancelOrder(ctx, "u1", order.id);
+  const settledCalls = await Promise.allSettled([firstCall, secondCall]);
+
+  assert.equal(ctx.pg.refunds.length, 0);
+  const fulfilledCalls = settledCalls.filter((result) => result.status === "fulfilled");
+  assert.equal(fulfilledCalls.length >= 1, true);
+  for (const result of settledCalls) {
+    if (result.status === "fulfilled") {
+      assert.equal(result.value.order.status, "CANCELED");
+    } else {
+      assert.equal(result.reason.code, "INVALID_STATE");
+    }
+  }
+
+  assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+  // 취소 전 8개, 한 번 복원하면 10개이며 두 번 복원하면 12개다.
+  assert.equal(ctx.store.products.get("P1").stock, 10);
+});
