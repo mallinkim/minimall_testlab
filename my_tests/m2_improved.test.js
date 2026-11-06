@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { fresh, expectCode } = require("./_helpers");
 const { addToCart, getCart } = require("../src/cart");
+const { createOrder } = require("../src/order");
 
 test("[TC-R-01] P1 한 개를 담으면 수량과 금액을 정확히 반환한다", () => {
   // 요청 수량과 장바구니 금액이 잘못 계산되는 결함을 잡는다.
@@ -42,4 +43,23 @@ test("[TC-R-04] 수량 100은 INVALID_QUANTITY이고 장바구니를 바꾸지 �
   expectCode(() => addToCart(ctx, "u1", "P1", 100), "INVALID_QUANTITY");
   assert.deepEqual(getCart(ctx, "u1").items, []);
   assert.equal(getCart(ctx, "u1").totalAmount, 0);
+});
+
+test("[TC-R-05] 장바구니 항목 금액과 합계를 정확히 계산한다", () => {
+  // 항목 금액이나 합계 계산이 잘못되는 결함을 잡는다.
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  addToCart(ctx, "u1", "P2", 1);
+  const cart = getCart(ctx, "u1");
+  assert.equal(cart.items[0].lineTotal, 30000);
+  assert.equal(cart.items[1].lineTotal, 59000);
+  assert.equal(cart.totalAmount, 89000);
+});
+
+test("[TC-R-06] 주문 금액은 주문 상품 합계 30000원이다", () => {
+  // 주문 총액이 상품 단가와 수량에 따라 계산되지 않는 결함을 잡는다.
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const order = createOrder(ctx, "u1", { address: "서울시" });
+  assert.equal(order.totalAmount, 30000);
 });
