@@ -351,12 +351,14 @@ test("[TC-X-07d] CANCELED 주문 재취소는 거부되고 주문·재고를 유
   assert.equal(ctx.store.products.get("P1").stock, stockBeforeSecondCancel);
 });
 
+// 팀 가정: 계약은 남의 주문이면서 취소 불가 상태인 경우 검사 우선순위를 정하지 않아 테스트하지 않는다.
 // 계약 근거: API_CONTRACT.md 공통 규칙 (12, 15, 24), §4 규칙 1 (127).
 test("[TC-X-08a] 남의 PENDING_PAYMENT 주문 취소는 NOT_FOUND이고 상태를 바꾸지 않는다", async () => {
   const ctx = fresh({
     pg: createImmediateRefundPg([
       { ok: true, refundId: "RF-X-08A-UNEXPECTED" },
     ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
   });
   const order = seedOrder(ctx, {
     userId: "owner",
@@ -388,6 +390,7 @@ test("[TC-X-08b] 남의 PAID 주문 취소는 NOT_FOUND이고 결제 기록을 �
     pg: createImmediateRefundPg([
       { ok: true, refundId: "RF-X-08B-UNEXPECTED" },
     ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
   });
   const order = seedOrder(ctx, {
     userId: "owner",
@@ -424,6 +427,7 @@ test("[TC-X-08c] 없는 주문 취소는 NOT_FOUND이고 저장소 상태를 바
     pg: createImmediateRefundPg([
       { ok: true, refundId: "RF-X-08C-UNEXPECTED" },
     ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
   });
   const orderId = "ORD-9999";
 
