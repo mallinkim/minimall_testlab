@@ -347,5 +347,26 @@
     assert.equal(ctx.pg.charges.length, 1);
   });
 
-  test.todo("[TC-P-12] TODO: 취소된 주문 · 남의 주문");
-  test.todo("[TC-P-13] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
+  // 팀 가정(규칙 3, API_CONTRACT.md 111행에 직접 적혀 있지 않음): 결제 기록은 없고 주문 상태는 CANCELED로 유지한다.
+  test("[TC-P-12] 취소된 주문은 결제를 거부하고 PG와 결제 기록을 만들지 않는다", async () => {
+    const ctx = fresh({
+      pg: createPg([{ ok: true, txId: "TX-P-CANCELED" }]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, {
+      items: [["P1", 2]],
+      status: "CANCELED",
+    });
+
+    await expectRejectCode(
+      () => payOrder(ctx, "u1", order.id),
+      "INVALID_STATE",
+    );
+
+    assert.equal(ctx.pg.charges.length, 0);
+    assert.equal((ctx.store.payments.get(order.id) ?? []).length, 0);
+    assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+  });
+
+  test.todo("[TC-P-13] TODO: 남의 주문");
+  test.todo("[TC-P-14] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
