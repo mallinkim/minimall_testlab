@@ -278,3 +278,93 @@ test("[TC-C-37] 존재하지 않는 상품 ID의 수량을 변경하면 NOT_FOUN
   expectCode(() => changeQuantity(ctx, "u1", "PX", 1), "NOT_FOUND");
   assert.deepEqual(getCart(ctx, "u1"), before);
 });
+
+test("[TC-C-38] 여러 상품 중 가운데 P2를 삭제하면 나머지 순서를 유지하고 getCart와 같은 값을 반환한다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 1);
+  addToCart(ctx, "u1", "P2", 1);
+  addToCart(ctx, "u1", "P5", 1);
+  const cart = removeItem(ctx, "u1", "P2");
+  assert.deepEqual(cart.items, [
+    { productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 1, lineTotal: 15000 },
+    { productId: "P5", name: "모니터 받침대", unitPrice: 25000, quantity: 1, lineTotal: 25000 },
+  ]);
+  assert.equal(cart.totalAmount, 40000);
+  assert.deepEqual(cart, getCart(ctx, "u1"));
+});
+
+test("[TC-C-39] 마지막 남은 상품을 삭제하면 빈 장바구니를 반환하고 getCart와 값이 같다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P5", 1);
+  const cart = removeItem(ctx, "u1", "P5");
+  assert.deepEqual(cart.items, []);
+  assert.equal(cart.totalAmount, 0);
+  assert.deepEqual(cart, getCart(ctx, "u1"));
+});
+
+test("[TC-C-40] 삭제한 P2를 다시 담으면 맨 뒤 순서가 되고 getCart와 같은 값을 반환한다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 1);
+  addToCart(ctx, "u1", "P2", 1);
+  addToCart(ctx, "u1", "P5", 1);
+  removeItem(ctx, "u1", "P2");
+  addToCart(ctx, "u1", "P2", 1);
+  const cart = removeItem(ctx, "u1", "P1");
+  assert.deepEqual(cart.items, [
+    { productId: "P5", name: "모니터 받침대", unitPrice: 25000, quantity: 1, lineTotal: 25000 },
+    { productId: "P2", name: "기계식 키보드", unitPrice: 59000, quantity: 1, lineTotal: 59000 },
+  ]);
+  assert.equal(cart.totalAmount, 84000);
+  assert.deepEqual(cart, getCart(ctx, "u1"));
+});
+
+test("[TC-C-41] 장바구니에 없는 상품을 삭제하면 NOT_FOUND이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 1);
+  addToCart(ctx, "u1", "P5", 1);
+  const before = getCart(ctx, "u1");
+  expectCode(() => removeItem(ctx, "u1", "P2"), "NOT_FOUND");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-42] 존재하지 않는 상품 ID를 삭제하면 NOT_FOUND이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 1);
+  addToCart(ctx, "u1", "P5", 1);
+  const before = getCart(ctx, "u1");
+  expectCode(() => removeItem(ctx, "u1", "P999"), "NOT_FOUND");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-43] 장바구니를 만든 적 없는 구매자가 삭제하면 NOT_FOUND이고 상태는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  const before = getCart(ctx, "u1");
+  expectCode(() => removeItem(ctx, "u1", "P1"), "NOT_FOUND");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-44] P1 3개와 P2 2개 중 P2를 삭제하면 P1의 수량과 합계를 유지한다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 3);
+  addToCart(ctx, "u1", "P2", 2);
+  const cart = removeItem(ctx, "u1", "P2");
+  assert.deepEqual(cart.items, [
+    { productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 3, lineTotal: 45000 },
+  ]);
+  assert.equal(cart.totalAmount, 45000);
+});
+
+test("[TC-C-45] u1의 P1을 삭제해도 u2의 장바구니는 유지된다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 1);
+  addToCart(ctx, "u2", "P1", 1);
+  const cart = removeItem(ctx, "u1", "P1");
+  assert.deepEqual(cart.items, []);
+  assert.equal(cart.totalAmount, 0);
+  assert.deepEqual(getCart(ctx, "u1"), { userId: "u1", items: [], totalAmount: 0 });
+  assert.deepEqual(getCart(ctx, "u2"), {
+    userId: "u2",
+    items: [{ productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 1, lineTotal: 15000 }],
+    totalAmount: 15000,
+  });
+});
