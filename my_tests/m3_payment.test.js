@@ -133,6 +133,138 @@
     assert.equal(ctx.pg.charges.length, 1);
   });
 
-  test.todo("[TC-P-06] TODO: 재시도 — attempt 번호와 멱등성 키");
-  test.todo("[TC-P-07] TODO: 이미 결제됨 · 취소된 주문 · 남의 주문");
-  test.todo("[TC-P-08] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
+  test("[TC-P-06] PG 실패 후 재시도하면 성공하고 시도별 기록을 남긴다", async () => {
+    const ctx = fresh({
+      pg: createPg([
+        { ok: false, reason: "LIMIT_EXCEEDED" },
+        { ok: true, txId: "TX-P-RETRY" },
+      ]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+    const firstError = await expectRejectCode(
+      () => payOrder(ctx, "u1", order.id),
+      "PAYMENT_FAILED",
+    );
+    assert.equal(firstError.details.reason, "LIMIT_EXCEEDED");
+
+    const secondResult = await payOrder(ctx, "u1", order.id);
+    const payments = ctx.store.payments.get(order.id);
+
+    assert.equal(payments.length, 2);
+    assert.equal(payments[0].status, "FAILED");
+    assert.equal(payments[0].attempt, 1);
+    assert.equal(payments[0].failureReason, "LIMIT_EXCEEDED");
+    assert.equal(payments[1].status, "SUCCEEDED");
+    assert.equal(payments[1].attempt, 2);
+    assert.equal(payments[1].txId, "TX-P-RETRY");
+    assert.equal(secondResult.alreadyPaid, false);
+    assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+
+    assert.equal(ctx.pg.charges.length, 2);
+    assert.equal(ctx.pg.charges[0].orderId, order.id);
+    assert.equal(ctx.pg.charges[1].orderId, order.id);
+    assert.equal(ctx.pg.charges[0].amount, 30000);
+    assert.equal(ctx.pg.charges[1].amount, 30000);
+    assert.notEqual(ctx.pg.charges[0].idempotencyKey, "");
+    assert.notEqual(ctx.pg.charges[1].idempotencyKey, "");
+    assert.notEqual(
+      ctx.pg.charges[0].idempotencyKey,
+      ctx.pg.charges[1].idempotencyKey,
+    );
+  });
+
+  test("[TC-P-07] PG 시간 초과 후 재시도하면 성공하고 시도별 기록을 남긴다", async () => {
+    const ctx = fresh({
+      pg: createPg([
+        new Error("PG_TIMEOUT"),
+        { ok: true, txId: "TX-P-RETRY" },
+      ]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+    const firstError = await expectRejectCode(
+      () => payOrder(ctx, "u1", order.id),
+      "PAYMENT_FAILED",
+    );
+    assert.equal(firstError.details.reason, "PG_ERROR");
+
+    const secondResult = await payOrder(ctx, "u1", order.id);
+    const payments = ctx.store.payments.get(order.id);
+
+    assert.equal(payments.length, 2);
+    assert.equal(payments[0].status, "FAILED");
+    assert.equal(payments[0].attempt, 1);
+    assert.equal(payments[0].failureReason, "PG_ERROR");
+    assert.equal(payments[1].status, "SUCCEEDED");
+    assert.equal(payments[1].attempt, 2);
+    assert.equal(payments[1].txId, "TX-P-RETRY");
+    assert.equal(secondResult.alreadyPaid, false);
+    assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+
+    assert.equal(ctx.pg.charges.length, 2);
+    assert.equal(ctx.pg.charges[0].orderId, order.id);
+    assert.equal(ctx.pg.charges[1].orderId, order.id);
+    assert.equal(ctx.pg.charges[0].amount, 30000);
+    assert.equal(ctx.pg.charges[1].amount, 30000);
+    assert.notEqual(ctx.pg.charges[0].idempotencyKey, "");
+    assert.notEqual(ctx.pg.charges[1].idempotencyKey, "");
+    assert.notEqual(
+      ctx.pg.charges[0].idempotencyKey,
+      ctx.pg.charges[1].idempotencyKey,
+    );
+  });
+
+  test("[TC-P-08] 실패 후 다시 시도해 성공하면 attempt와 멱등성 키가 증가한다", async () => {
+    const ctx = fresh({
+      pg: createPg([
+        { ok: false, reason: "LIMIT_EXCEEDED" },
+        { ok: false, reason: "LIMIT_EXCEEDED" },
+        { ok: true, txId: "TX-P-RETRY" },
+      ]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+    await expectRejectCode(
+      () => payOrder(ctx, "u1", order.id),
+      "PAYMENT_FAILED",
+    );
+    await expectRejectCode(
+      () => payOrder(ctx, "u1", order.id),
+      "PAYMENT_FAILED",
+    );
+    await payOrder(ctx, "u1", order.id);
+
+    const payments = ctx.store.payments.get(order.id);
+    assert.equal(payments.length, 3);
+    assert.equal(payments[0].status, "FAILED");
+    assert.equal(payments[0].attempt, 1);
+    assert.equal(payments[1].status, "FAILED");
+    assert.equal(payments[1].attempt, 2);
+    assert.equal(payments[2].status, "SUCCEEDED");
+    assert.equal(payments[2].attempt, 3);
+    assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+
+    assert.equal(ctx.pg.charges.length, 3);
+    assert.notEqual(ctx.pg.charges[0].idempotencyKey, "");
+    assert.notEqual(ctx.pg.charges[1].idempotencyKey, "");
+    assert.notEqual(ctx.pg.charges[2].idempotencyKey, "");
+    assert.notEqual(
+      ctx.pg.charges[0].idempotencyKey,
+      ctx.pg.charges[1].idempotencyKey,
+    );
+    assert.notEqual(
+      ctx.pg.charges[0].idempotencyKey,
+      ctx.pg.charges[2].idempotencyKey,
+    );
+    assert.notEqual(
+      ctx.pg.charges[1].idempotencyKey,
+      ctx.pg.charges[2].idempotencyKey,
+    );
+  });
+
+  test.todo("[TC-P-09] TODO: 이미 결제됨 · 취소된 주문 · 남의 주문");
+  test.todo("[TC-P-10] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
