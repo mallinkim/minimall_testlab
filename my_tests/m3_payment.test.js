@@ -18,6 +18,25 @@
     return pg;
   }
 
+  function createControlledPg(responses) {
+    let releaseResponse;
+    const responseGate = new Promise((resolve) => {
+      releaseResponse = resolve;
+    });
+    const pg = {
+      charges: [],
+      async charge(request) {
+        const responseIndex = pg.charges.length;
+        pg.charges.push({ ...request });
+        const response = await responseGate;
+        const result = responses[responseIndex];
+        if (result instanceof Error) throw result;
+        return result;
+      },
+    };
+    return { pg, release: () => releaseResponse() };
+  }
+
   test("[TC-P-01] 성공 시 전체 반환값과 PG 요청을 확인한다", async () => {
     const ctx = fresh({
       pg: createPg([{ ok: true, txId: "TX-P-001" }]),
@@ -86,6 +105,7 @@
     assert.equal(storedPayment.txId, "TX-P-001");
   });
 
+  // 잡는 결함: PG 결제 실패(ok: false)를 성공으로 처리하는 결함
   test("[TC-P-04] PG 실패 시 오류 사유와 결제대기 상태 및 실패 기록을 확인한다", async () => {
     const ctx = fresh({
       pg: createPg([{ ok: false, reason: "LIMIT_EXCEEDED" }]),
@@ -109,6 +129,7 @@
     assert.equal(ctx.pg.charges.length, 1);
   });
 
+  // 잡는 결함: PG 예외(시간 초과)를 성공으로 처리하거나 예외 메시지를 그대로 노출하는 결함
   test("[TC-P-05] PG 시간 초과 시 PG_ERROR와 결제대기 상태 및 실패 기록을 확인한다", async () => {
     const ctx = fresh({
       pg: createPg([new Error("PG_TIMEOUT")]),
@@ -348,6 +369,7 @@
   });
 
   // 팀 가정(규칙 3, API_CONTRACT.md 111행에 직접 적혀 있지 않음): 결제 기록은 없고 주문 상태는 CANCELED로 유지한다.
+  // 잡는 결함: 결제대기가 아닌(취소된) 주문의 결제를 허용하는 결함
   test("[TC-P-12] 취소된 주문은 결제를 거부하고 PG와 결제 기록을 만들지 않는다", async () => {
     const ctx = fresh({
       pg: createPg([{ ok: true, txId: "TX-P-CANCELED" }]),
@@ -403,4 +425,154 @@
     assert.equal((ctx.store.payments.get(orderId) ?? []).length, 0);
   });
 
-  test.todo("[TC-P-15] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
+  // 팀 가정: 동시 요청 한 묶음의 결제 기록은 한 건이다. setImmediate로 두 번째 호출이 진행 중 확인 지점에 도달할 기회를 준 뒤 PG를 풀어 동시 요청을 만든다.
+  // 잡는 결함: 같은 주문의 동시 결제 요청이 진행 중 요청을 공유하지 않고 PG를 다시 호출하는 결함
+  test("[TC-P-15] 같은 주문 동시 결제 성공은 PG를 한 번만 호출한다", async () => {
+    const controlledPg = createControlledPg([
+      { ok: true, txId: "TX-P-015-A" },
+      { ok: true, txId: "TX-P-015-B" },
+    ]);
+    const ctx = fresh({
+      pg: controlledPg.pg,
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+    const firstCall = payOrder(ctx, "u1", order.id);
+    const secondCall = payOrder(ctx, "u1", order.id);
+    const settledCalls = Promise.allSettled([firstCall, secondCall]);
+    await new Promise((resolve) => setImmediate(resolve));
+    controlledPg.release();
+    await settledCalls;
+
+    assert.equal(ctx.pg.charges.length, 1);
+    assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+    const payments = ctx.store.payments.get(order.id);
+    assert.equal(payments.length, 1);
+    assert.equal(payments[0].status, "SUCCEEDED");
+  });
+
+  // 팀 가정: 동시 요청 한 묶음의 실패 결제 기록은 한 건이다. setImmediate로 두 번째 호출이 진행 중 확인 지점에 도달할 기회를 준 뒤 PG를 풀어 동시 요청을 만든다.
+  // 잡는 결함: 같은 주문의 동시 결제 요청이 진행 중 요청을 공유하지 않고 PG를 다시 호출하는 결함
+  test("[TC-P-16] 같은 주문 동시 결제 실패는 두 호출에 같은 오류를 돌려준다", async () => {
+    const controlledPg = createControlledPg([
+      { ok: false, reason: "LIMIT_EXCEEDED" },
+      { ok: false, reason: "INSUFFICIENT_FUNDS" },
+    ]);
+    const ctx = fresh({
+      pg: controlledPg.pg,
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+    const firstCall = payOrder(ctx, "u1", order.id);
+    const secondCall = payOrder(ctx, "u1", order.id);
+    const settledCalls = Promise.allSettled([firstCall, secondCall]);
+    await new Promise((resolve) => setImmediate(resolve));
+    controlledPg.release();
+    const [firstResult, secondResult] = await settledCalls;
+
+    assert.equal(firstResult.status, "rejected");
+    assert.equal(secondResult.status, "rejected");
+    assert.equal(firstResult.reason.code, "PAYMENT_FAILED");
+    assert.equal(secondResult.reason.code, "PAYMENT_FAILED");
+    assert.equal(firstResult.reason.details.reason, "LIMIT_EXCEEDED");
+    assert.equal(
+      secondResult.reason.details.reason,
+      firstResult.reason.details.reason,
+    );
+
+    assert.equal(ctx.pg.charges.length, 1);
+    assert.equal(ctx.store.orders.get(order.id).status, "PENDING_PAYMENT");
+    const payments = ctx.store.payments.get(order.id);
+    assert.equal(payments.length, 1);
+    assert.equal(payments[0].status, "FAILED");
+    assert.equal(payments[0].failureReason, "LIMIT_EXCEEDED");
+  });
+
+  // 팀 가정: fresh() 픽스처의 주문 합계는 계약서에 고정되어 있지 않고, 각 주문에 결제 기록 1건을 기대한다.
+  test("[TC-P-17] 서로 다른 주문의 동시 결제는 각각 한 번 성공한다", async () => {
+    const controlledPg = createControlledPg([
+      { ok: true, txId: "TX-P-017-A" },
+      { ok: true, txId: "TX-P-017-B" },
+    ]);
+    const ctx = fresh({
+      pg: controlledPg.pg,
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const orderA = seedOrder(ctx, { userId: "u1", items: [["P1", 2]] });
+    const orderB = seedOrder(ctx, { userId: "u1", items: [["P2", 1]] });
+
+    const firstCall = payOrder(ctx, "u1", orderA.id);
+    const secondCall = payOrder(ctx, "u1", orderB.id);
+    const settledCalls = Promise.allSettled([firstCall, secondCall]);
+    await new Promise((resolve) => setImmediate(resolve));
+    try {
+      assert.equal(controlledPg.pg.charges.length, 2);
+    } finally {
+      controlledPg.release();
+    }
+    const [firstResult, secondResult] = await settledCalls;
+
+    assert.equal(firstResult.status, "fulfilled");
+    assert.equal(secondResult.status, "fulfilled");
+    assert.equal(ctx.pg.charges.length, 2);
+    assert.equal(ctx.pg.charges[0].orderId, orderA.id);
+    assert.equal(ctx.pg.charges[0].amount, 30000);
+    assert.equal(ctx.pg.charges[1].orderId, orderB.id);
+    assert.equal(ctx.pg.charges[1].amount, 59000);
+    assert.equal(ctx.store.orders.get(orderA.id).status, "PAID");
+    assert.equal(ctx.store.orders.get(orderB.id).status, "PAID");
+
+    const paymentsA = ctx.store.payments.get(orderA.id);
+    const paymentsB = ctx.store.payments.get(orderB.id);
+    assert.equal(paymentsA.length, 1);
+    assert.equal(paymentsA[0].status, "SUCCEEDED");
+    assert.equal(paymentsB.length, 1);
+    assert.equal(paymentsB[0].status, "SUCCEEDED");
+  });
+
+  // 팀 가정: fresh() 픽스처의 주문 합계는 계약서에 고정되어 있지 않고, 각 주문에 결제 기록 1건을 기대한다.
+  test("[TC-P-18] 한 주문의 결제 실패는 다른 주문의 성공에 영향을 주지 않는다", async () => {
+    const controlledPg = createControlledPg([
+      { ok: false, reason: "LIMIT_EXCEEDED" },
+      { ok: true, txId: "TX-P-018-B" },
+    ]);
+    const ctx = fresh({
+      pg: controlledPg.pg,
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const orderA = seedOrder(ctx, { userId: "u1", items: [["P1", 2]] });
+    const orderB = seedOrder(ctx, { userId: "u1", items: [["P2", 1]] });
+
+    const firstCall = payOrder(ctx, "u1", orderA.id);
+    const secondCall = payOrder(ctx, "u1", orderB.id);
+    const settledCalls = Promise.allSettled([firstCall, secondCall]);
+    await new Promise((resolve) => setImmediate(resolve));
+    try {
+      assert.equal(controlledPg.pg.charges.length, 2);
+    } finally {
+      controlledPg.release();
+    }
+    const [firstResult, secondResult] = await settledCalls;
+
+    assert.equal(firstResult.status, "rejected");
+    assert.equal(firstResult.reason.code, "PAYMENT_FAILED");
+    assert.equal(firstResult.reason.details.reason, "LIMIT_EXCEEDED");
+    assert.equal(secondResult.status, "fulfilled");
+    assert.equal(ctx.pg.charges.length, 2);
+    assert.equal(ctx.pg.charges[0].orderId, orderA.id);
+    assert.equal(ctx.pg.charges[0].amount, 30000);
+    assert.equal(ctx.pg.charges[1].orderId, orderB.id);
+    assert.equal(ctx.pg.charges[1].amount, 59000);
+    assert.equal(ctx.store.orders.get(orderA.id).status, "PENDING_PAYMENT");
+    assert.equal(ctx.store.orders.get(orderB.id).status, "PAID");
+
+    const paymentsA = ctx.store.payments.get(orderA.id);
+    const paymentsB = ctx.store.payments.get(orderB.id);
+    assert.equal(paymentsA.length, 1);
+    assert.equal(paymentsA[0].status, "FAILED");
+    assert.equal(paymentsA[0].failureReason, "LIMIT_EXCEEDED");
+    assert.equal(paymentsB.length, 1);
+    assert.equal(paymentsB[0].status, "SUCCEEDED");
+  });
