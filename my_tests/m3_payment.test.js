@@ -368,5 +368,39 @@
     assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
   });
 
-  test.todo("[TC-P-13] TODO: 남의 주문");
-  test.todo("[TC-P-14] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
+  // API_CONTRACT.md 12, 15, 109행: 오류 코드를 확인한다. 팀 가정(109행에 직접 명시되지 않음): PG 미호출, 결제 기록 없음, 주문 상태 유지.
+  test("[TC-P-13] 다른 사용자의 주문은 결제를 거부한다", async () => {
+    const ctx = fresh({
+      pg: createPg([{ ok: true, txId: "TX-P-013" }]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { userId: "u1", items: [["P1", 2]] });
+
+    await expectRejectCode(
+      () => payOrder(ctx, "u2", order.id),
+      "NOT_FOUND",
+    );
+
+    assert.equal(ctx.pg.charges.length, 0);
+    assert.equal((ctx.store.payments.get(order.id) ?? []).length, 0);
+    assert.equal(ctx.store.orders.get(order.id).status, "PENDING_PAYMENT");
+  });
+
+  // API_CONTRACT.md 12, 24행: 없는 주문은 NOT_FOUND다. 팀 가정(24행에 직접 명시되지 않음): PG 미호출 및 결제 기록 없음.
+  test("[TC-P-14] 존재하지 않는 주문 ID의 결제를 거부한다", async () => {
+    const ctx = fresh({
+      pg: createPg([{ ok: true, txId: "TX-P-014" }]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const orderId = "ORD-9999";
+
+    await expectRejectCode(
+      () => payOrder(ctx, "u1", orderId),
+      "NOT_FOUND",
+    );
+
+    assert.equal(ctx.pg.charges.length, 0);
+    assert.equal((ctx.store.payments.get(orderId) ?? []).length, 0);
+  });
+
+  test.todo("[TC-P-15] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
