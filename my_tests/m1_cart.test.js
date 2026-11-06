@@ -145,3 +145,136 @@ test("[TC-C-21] addToCart 반환값을 수정해도 getCart 결과는 바뀌지 
   returnedCart.items[0].quantity = 99;
   assert.deepEqual(getCart(ctx, "u1"), before);
 });
+
+test("[TC-C-22] P1 수량을 1로 변경하면 소계와 합계가 갱신된다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const cart = changeQuantity(ctx, "u1", "P1", 1);
+  assert.deepEqual(cart.items, [{ productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 1, lineTotal: 15000 }]);
+  assert.equal(cart.totalAmount, 15000);
+});
+
+test("[TC-C-23] 재고 99개인 P1의 수량을 99로 변경할 수 있다", () => {
+  const ctx = fresh({ products: [{ id: "P1", name: "무선 마우스", price: 15000, stock: 99, status: "ON_SALE" }] });
+  addToCart(ctx, "u1", "P1", 2);
+  const cart = changeQuantity(ctx, "u1", "P1", 99);
+  assert.deepEqual(cart.items, [{ productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 99, lineTotal: 1485000 }]);
+  assert.equal(cart.totalAmount, 1485000);
+});
+
+test("[TC-C-24] 수량 0은 INVALID_QUANTITY이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P1", 0), "INVALID_QUANTITY");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-25] 수량 100은 INVALID_QUANTITY이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P1", 100), "INVALID_QUANTITY");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-26] 수량 1.5는 INVALID_QUANTITY이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P1", 1.5), "INVALID_QUANTITY");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test('[TC-C-27] 문자열 수량 "2"는 INVALID_QUANTITY이고 장바구니는 바뀌지 않는다', () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P1", "2"), "INVALID_QUANTITY");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-28] 수량 null은 INVALID_QUANTITY이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P1", null), "INVALID_QUANTITY");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-29] 음수 수량은 INVALID_QUANTITY이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P1", -1), "INVALID_QUANTITY");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-30] 재고보다 큰 수량으로 변경하면 OUT_OF_STOCK이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh({ products: [{ id: "P1", name: "무선 마우스", price: 15000, stock: 3, status: "ON_SALE" }] });
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P1", 4), "OUT_OF_STOCK");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-31] P1 수량을 재고와 같은 10으로 변경할 수 있다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const cart = changeQuantity(ctx, "u1", "P1", 10);
+  assert.deepEqual(cart.items, [{ productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 10, lineTotal: 150000 }]);
+  assert.equal(cart.totalAmount, 150000);
+});
+
+test("[TC-C-32] 재고보다 하나 많은 수량으로 변경하면 OUT_OF_STOCK이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P1", 11), "OUT_OF_STOCK");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-33] 장바구니에 없는 P2의 수량을 변경하면 NOT_FOUND이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P2", 1), "NOT_FOUND");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-34] 담은 뒤 판매 중지된 P1의 수량을 변경하면 NOT_FOUND이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  ctx.store.products.get("P1").status = "STOPPED";
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "P1", 3), "NOT_FOUND");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
+
+test("[TC-C-35] P1 수량 변경 후에도 P1, P2 순서와 P2 수량이 유지된다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  addToCart(ctx, "u1", "P2", 1);
+  const cart = changeQuantity(ctx, "u1", "P1", 3);
+  assert.deepEqual(cart.items, [
+    { productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 3, lineTotal: 45000 },
+    { productId: "P2", name: "기계식 키보드", unitPrice: 59000, quantity: 1, lineTotal: 59000 },
+  ]);
+  assert.equal(cart.totalAmount, 104000);
+});
+
+test("[TC-C-36] P1 수량을 2에서 5로 변경하면 합산하지 않고 5가 된다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const cart = changeQuantity(ctx, "u1", "P1", 5);
+  assert.deepEqual(cart.items, [{ productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 5, lineTotal: 75000 }]);
+  assert.equal(cart.totalAmount, 75000);
+});
+
+test("[TC-C-37] 존재하지 않는 상품 ID의 수량을 변경하면 NOT_FOUND이고 장바구니는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const before = getCart(ctx, "u1");
+  expectCode(() => changeQuantity(ctx, "u1", "PX", 1), "NOT_FOUND");
+  assert.deepEqual(getCart(ctx, "u1"), before);
+});
