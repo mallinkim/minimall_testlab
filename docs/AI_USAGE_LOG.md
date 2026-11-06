@@ -158,6 +158,7 @@
   - 내비게이터(곽민주): 수정된 계획을 수정 요청 없이 승인
 - 결과: 세 파일 모두 수정 후 repeat 30회 실패 0% (0/30). npm test 실패 0. 변경 파일은 flaky_tests 3개뿐 (git status 확인)
 - 사람이 확인한 범위: 수정된 세 파일의 변경 내용(diff)을 직접 읽어 테스트 이름 · 개수 · 단언이 유지되었는지, real_clock 30ms · 29ms 짝과 shared_state ORD-0002 확인이 계획대로 들어갔는지 확인한 뒤 Keep. real_clock 은 정확히 30ms 경계를 확인하게 되어 경계 결함(>= → >)도 잡을 수 있는 더 강한 테스트가 됨
+  - 검증자(곽민주): 고친 테스트의 기대값을 일부러 틀리게 바꿔 실행 → 3개 모두 fail 후 git checkout -- flaky_tests 로 원복, git status 깨끗함 확인. random_quantity 합계 단가 15001 → fail(expected 15001 / actual 15000), real_clock '자동 취소된다'를 advance(29)로 → fail(expected ['ORD-0001'] / actual []), shared_state ORD-0003 → fail(expected 'ORD-0003' / actual 'ORD-0002'). 김윤영이 같은 변경을 따로 재현해 실패 메시지가 일치함을 확인
 - 에이전트의 실수 · 약한 테스트 · 불필요한 변경: 수정 제안에서 위 두 가지 짝짓기 오류 (이름과 단언 불일치). 수정 단계에서의 실패 · 재수정은 없었음
 - 고친 점 / 다음에 바꿀 프롬프트 규칙: AGENTS.md 에 팀 규칙 5(무작위 범위 · 공유 ctx · 동시 실행 금지, repeat 30회 확인) 추가
 - 재시도 횟수: 0
