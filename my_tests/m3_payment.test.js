@@ -10,7 +10,9 @@
       charges: [],
       async charge(request) {
         pg.charges.push({ ...request });
-        return responses.shift();
+        const response = responses.shift();
+        if (response instanceof Error) throw response;
+        return response;
       },
     };
     return pg;
@@ -107,7 +109,30 @@
     assert.equal(ctx.pg.charges.length, 1);
   });
 
-  test.todo("[TC-P-05] TODO: 재시도 — attempt 번호와 멱등성 키");
-  test.todo("[TC-P-06] TODO: 이미 결제됨 · 취소된 주문 · 남의 주문");
-  test.todo("[TC-P-07] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
-  test.todo("[TC-P-08] TODO: PG 시간 초과 — 오류 코드 · 사유 · 주문 상태 · 결제 기록");
+  test("[TC-P-05] PG 시간 초과 시 PG_ERROR와 결제대기 상태 및 실패 기록을 확인한다", async () => {
+    const ctx = fresh({
+      pg: createPg([new Error("PG_TIMEOUT")]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+    const error = await expectRejectCode(
+      () => payOrder(ctx, "u1", order.id),
+      "PAYMENT_FAILED",
+    );
+
+    assert.equal(error.details.reason, "PG_ERROR");
+    assert.notEqual(error.details.reason, "PG_TIMEOUT");
+    assert.equal(ctx.store.orders.get(order.id).status, "PENDING_PAYMENT");
+
+    const payments = ctx.store.payments.get(order.id);
+    assert.equal(payments.length, 1);
+    assert.equal(payments[0].status, "FAILED");
+    assert.equal(payments[0].failureReason, "PG_ERROR");
+    assert.equal(payments[0].attempt, 1);
+    assert.equal(ctx.pg.charges.length, 1);
+  });
+
+  test.todo("[TC-P-06] TODO: 재시도 — attempt 번호와 멱등성 키");
+  test.todo("[TC-P-07] TODO: 이미 결제됨 · 취소된 주문 · 남의 주문");
+  test.todo("[TC-P-08] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
