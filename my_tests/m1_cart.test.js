@@ -368,3 +368,66 @@ test("[TC-C-45] u1의 P1을 삭제해도 u2의 장바구니는 유지된다", ()
     totalAmount: 15000,
   });
 });
+
+test("[TC-C-46] 장바구니를 만든 적 없는 구매자의 getCart는 빈 장바구니를 반환한다", () => {
+  const ctx = fresh();
+  assert.deepEqual(getCart(ctx, "u1"), {
+    userId: "u1",
+    items: [],
+    totalAmount: 0,
+  });
+});
+
+test("[TC-C-47] getCart는 담은 순서와 여러 상품의 소계 및 합계를 반환한다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P2", 2);
+  addToCart(ctx, "u1", "P1", 2);
+  assert.deepEqual(getCart(ctx, "u1"), {
+    userId: "u1",
+    items: [
+      { productId: "P2", name: "기계식 키보드", unitPrice: 59000, quantity: 2, lineTotal: 118000 },
+      { productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 2, lineTotal: 30000 },
+    ],
+    totalAmount: 148000,
+  });
+});
+
+test("[TC-C-48] getCart 반환 객체를 수정해도 다음 조회 결과는 바뀌지 않는다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const returnedCart = getCart(ctx, "u1");
+  returnedCart.userId = "u2";
+  returnedCart.items[0].quantity = 99;
+  returnedCart.items[0].lineTotal = 1485000;
+  returnedCart.totalAmount = 1485000;
+  assert.deepEqual(getCart(ctx, "u1"), {
+    userId: "u1",
+    items: [{ productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 2, lineTotal: 30000 }],
+    totalAmount: 30000,
+  });
+});
+
+test("[TC-C-49] 같은 상품을 다시 담아도 처음 담은 순서가 유지되고 수량이 합산된다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 1);
+  addToCart(ctx, "u1", "P2", 1);
+  addToCart(ctx, "u1", "P1", 1);
+  assert.deepEqual(getCart(ctx, "u1"), {
+    userId: "u1",
+    items: [
+      { productId: "P1", name: "무선 마우스", unitPrice: 15000, quantity: 2, lineTotal: 30000 },
+      { productId: "P2", name: "기계식 키보드", unitPrice: 59000, quantity: 1, lineTotal: 59000 },
+    ],
+    totalAmount: 89000,
+  });
+});
+
+test("[TC-C-50] u1의 장바구니가 있어도 u2의 getCart는 빈 장바구니를 반환한다", () => {
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 1);
+  assert.deepEqual(getCart(ctx, "u2"), {
+    userId: "u2",
+    items: [],
+    totalAmount: 0,
+  });
+});
