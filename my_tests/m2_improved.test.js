@@ -8,6 +8,7 @@ const { createOrder, changeStatus } = require("../src/order");
 const { getOrderDetail, listOrders } = require("../src/orderQuery");
 const { seedOrder } = require("../src/testkit");
 const { cancelOrder } = require("../src/cancel");
+const { payOrder } = require("../src/payment");
 
 test("[TC-R-01] P1 한 개를 담으면 수량과 금액을 정확히 반환한다", () => {
   // 요청 수량과 장바구니 금액이 잘못 계산되는 결함을 잡는다.
@@ -196,4 +197,155 @@ test("[TC-R-18] 이미 취소된 주문 재취소는 INVALID_STATE이고 환불�
   assert.equal(stockCheckCart.items[0].quantity, 9);
   const err = expectCode(() => addToCart(ctx, "u2", "P1", 1), "OUT_OF_STOCK");
   assert.equal(err.details.maxAddable, 0);
+});
+
+test("[TC-R-19] PG 결제 실패는 PAYMENT_FAILED와 사유를 남기고 주문을 대기 상태로 둔다", async () => {
+  // PG 거절을 결제 성공으로 처리하거나 실패 사유·주문 상태를 잘못 기록하는 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx);
+  ctx.pg.failNextCharge("LIMIT_EXCEEDED");
+
+  const err = await expectRejectCode(() => payOrder(ctx, "u1", order.id), "PAYMENT_FAILED");
+  assert.equal(err.details.reason, "LIMIT_EXCEEDED");
+  assert.equal(getOrderDetail(ctx, "u1", order.id).status, "PENDING_PAYMENT");
+  assert.equal(ctx.pg.charges.length, 1);
+});
+
+test("[TC-R-20] PG 시간 초과는 PAYMENT_FAILED와 PG_ERROR로 처리한다", async () => {
+  // PG 시간 초과를 성공으로 처리하거나 계약된 실패 사유를 기록하지 않는 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx);
+  ctx.pg.timeoutNextCharge();
+
+  const err = await expectRejectCode(() => payOrder(ctx, "u1", order.id), "PAYMENT_FAILED");
+  assert.equal(err.details.reason, "PG_ERROR");
+  assert.equal(getOrderDetail(ctx, "u1", order.id).status, "PENDING_PAYMENT");
+  assert.equal(ctx.pg.charges.length, 1);
+});
+
+test("[TC-R-21] 취소된 주문 결제는 INVALID_STATE이고 PG를 호출하지 않는다", async () => {
+  // 취소된 주문에 결제를 허용하거나 PG를 호출하는 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx, { status: "CANCELED" });
+
+  const err = await expectRejectCode(() => payOrder(ctx, "u1", order.id), "INVALID_STATE");
+  assert.equal(err.details.status, "CANCELED");
+  assert.equal(ctx.pg.charges.length, 0);
+  assert.equal(getOrderDetail(ctx, "u1", order.id).status, "CANCELED");
+});
+
+test("[TC-R-22] 결제 실패 뒤 재시도하면 두 번째 시도로 결제가 완료된다", async () => {
+  // 실패 뒤 재결제를 막거나 시도 기록·번호를 증가시키지 않는 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx);
+  ctx.pg.failNextCharge("LIMIT_EXCEEDED");
+
+  const firstError = await expectRejectCode(() => payOrder(ctx, "u1", order.id), "PAYMENT_FAILED");
+  assert.equal(firstError.details.reason, "LIMIT_EXCEEDED");
+  assert.equal(getOrderDetail(ctx, "u1", order.id).status, "PENDING_PAYMENT");
+  const failedPayment = ctx.store.payments.get(order.id)[0];
+  assert.equal(failedPayment.status, "FAILED");
+  assert.equal(failedPayment.attempt, 1);
+  assert.equal(failedPayment.failureReason, "LIMIT_EXCEEDED");
+
+  const retry = await payOrder(ctx, "u1", order.id);
+  assert.equal(retry.order.status, "PAID");
+  assert.equal(retry.payment.status, "SUCCEEDED");
+  assert.equal(retry.payment.attempt, 2);
+  assert.equal(ctx.store.payments.get(order.id).length, 2);
+  assert.equal(ctx.pg.charges.length, 2);
+});
+
+test("[TC-R-23] 환불 실패 후 주문·재고를 유지하고 재취소를 허용한다", async () => {
+  // 환불 실패를 취소 완료로 처리하거나 재고를 먼저 복원하고 재시도를 막는 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx, { status: "PAID" });
+  ctx.pg.failNextRefund("REFUND_REJECTED");
+
+  const firstError = await expectRejectCode(() => cancelOrder(ctx, "u1", order.id), "REFUND_FAILED");
+  assert.equal(firstError.details.reason, "REFUND_REJECTED");
+  assert.equal(getOrderDetail(ctx, "u1", order.id).status, "PAID");
+  assert.equal(ctx.store.payments.get(order.id)[0].refund.status, "FAILED");
+  assert.equal(ctx.store.payments.get(order.id)[0].refund.reason, "REFUND_REJECTED");
+  assert.equal(ctx.pg.refunds.length, 1);
+
+  const stockBeforeRetry = expectCode(() => addToCart(ctx, "u2", "P1", 10), "OUT_OF_STOCK");
+  assert.equal(stockBeforeRetry.details.maxAddable, 9);
+
+  const retry = await cancelOrder(ctx, "u1", order.id);
+  assert.equal(retry.order.status, "CANCELED");
+  assert.equal(ctx.pg.refunds.length, 2);
+  const stockAfterRetry = addToCart(ctx, "u2", "P1", 10);
+  assert.equal(stockAfterRetry.items[0].quantity, 10);
+});
+
+test("[TC-R-24] 같은 상품을 다시 담으면 두 수량을 합산한다", () => {
+  // 이미 담긴 상품에 추가 수량을 합산하지 않고 덮어쓰는 결함을 잡는다.
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 2);
+  const cart = addToCart(ctx, "u1", "P1", 3);
+  assert.equal(cart.items.length, 1);
+  assert.equal(cart.items[0].quantity, 5);
+  assert.equal(cart.items[0].lineTotal, 75000);
+});
+
+test("[TC-R-25] 주문 성공은 재고를 차감해 남은 수량만 담게 한다", () => {
+  // 주문 시 재고 차감이 누락되거나 잘못 적용되는 결함을 잡는다.
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 1);
+  const order = createOrder(ctx, "u1", { address: "서울시" });
+  assert.equal(order.status, "PENDING_PAYMENT");
+  assert.equal(getOrderDetail(ctx, "u1", order.id).items[0].quantity, 1);
+
+  const overRemaining = expectCode(() => addToCart(ctx, "u2", "P1", 10), "OUT_OF_STOCK");
+  assert.equal(overRemaining.details.maxAddable, 9);
+  const remaining = addToCart(ctx, "u2", "P1", 9);
+  assert.equal(remaining.items[0].quantity, 9);
+});
+
+test("[TC-R-26] 결제 전 취소는 재고를 복원한다", async () => {
+  // 결제 전 주문 취소 시 상품 재고 복원이 빠지는 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx, { items: [["P1", 3]] });
+
+  const result = await cancelOrder(ctx, "u1", order.id);
+  assert.equal(result.order.status, "CANCELED");
+  const restored = addToCart(ctx, "u2", "P1", 10);
+  assert.equal(restored.items[0].quantity, 10);
+});
+
+test("[TC-R-27] 결제 후 취소는 환불 성공 기록과 취소 상태를 남긴다", async () => {
+  // PAID 주문을 환불 없이 취소하거나 환불 성공 기록을 남기지 않는 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx, { status: "PAID", items: [["P1", 1]] });
+
+  const result = await cancelOrder(ctx, "u1", order.id);
+  assert.equal(result.order.status, "CANCELED");
+  assert.equal(ctx.pg.refunds.length, 1);
+  assert.equal(ctx.pg.refunds[0].amount, 15000);
+  const payment = ctx.store.payments.get(order.id)[0];
+  assert.equal(payment.status, "REFUNDED");
+  assert.equal(payment.refund.status, "SUCCEEDED");
+});
+
+test("[TC-R-28] 이미 결제된 주문 재요청은 PG를 다시 호출하지 않는다", async () => {
+  // 이미 결제된 주문에 대해 PG 결제가 중복 호출되는 결함을 잡는다.
+  const ctx = fresh();
+  const order = seedOrder(ctx);
+
+  await payOrder(ctx, "u1", order.id);
+  assert.equal(ctx.pg.charges.length, 1);
+  const again = await payOrder(ctx, "u1", order.id);
+  assert.equal(again.alreadyPaid, true);
+  assert.equal(ctx.pg.charges.length, 1);
+});
+
+test("[TC-R-29] 허용된 상태 변경은 반환 주문에 새 상태를 반영한다", () => {
+  // 허용된 상태 전이가 변경 주문의 반환값에 반영되지 않는 결함을 잡는다.
+  const ctx = fresh();
+  addToCart(ctx, "u1", "P1", 1);
+  const order = createOrder(ctx, "u1", { address: "서울시" });
+
+  const changed = changeStatus(ctx, order.id, "PAID");
+  assert.equal(changed.status, "PAID");
 });
