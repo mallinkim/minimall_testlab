@@ -266,5 +266,86 @@
     );
   });
 
-  test.todo("[TC-P-09] TODO: 이미 결제됨 · 취소된 주문 · 남의 주문");
-  test.todo("[TC-P-10] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
+  // "기존 결과"는 첫 성공 호출의 order와 payment에 alreadyPaid: true를 붙인 결과로 해석한다.
+  test("[TC-P-09] 이미 결제된 주문은 첫 성공 결과를 반환하고 PG를 다시 호출하지 않는다", async () => {
+    const ctx = fresh({
+      pg: createPg([{ ok: true, txId: "TX-P-001" }]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+    const firstResult = await payOrder(ctx, "u1", order.id);
+    const secondResult = await payOrder(ctx, "u1", order.id);
+    const payments = ctx.store.payments.get(order.id);
+
+    assert.deepEqual(secondResult.order, firstResult.order);
+    assert.deepEqual(secondResult.payment, firstResult.payment);
+    assert.equal(secondResult.alreadyPaid, true);
+    assert.equal(secondResult.order.status, "PAID");
+    assert.equal(secondResult.payment.status, "SUCCEEDED");
+    assert.equal(secondResult.payment.attempt, 1);
+    assert.equal(ctx.pg.charges.length, 1);
+    assert.equal(payments.length, 1);
+    assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+  });
+
+  test("[TC-P-10] 실패 후 성공한 주문을 다시 결제하면 성공 결과를 반환하고 기록을 늘리지 않는다", async () => {
+    const ctx = fresh({
+      pg: createPg([
+        { ok: false, reason: "LIMIT_EXCEEDED" },
+        { ok: true, txId: "TX-P-RETRY" },
+      ]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+    const firstError = await expectRejectCode(
+      () => payOrder(ctx, "u1", order.id),
+      "PAYMENT_FAILED",
+    );
+    assert.equal(firstError.details.reason, "LIMIT_EXCEEDED");
+
+    const successfulResult = await payOrder(ctx, "u1", order.id);
+    const repeatedResult = await payOrder(ctx, "u1", order.id);
+    const payments = ctx.store.payments.get(order.id);
+
+    assert.deepEqual(repeatedResult.order, successfulResult.order);
+    assert.deepEqual(repeatedResult.payment, successfulResult.payment);
+    assert.equal(repeatedResult.alreadyPaid, true);
+    assert.equal(repeatedResult.order.status, "PAID");
+    assert.equal(repeatedResult.payment.status, "SUCCEEDED");
+    assert.equal(repeatedResult.payment.attempt, 2);
+    assert.equal(ctx.pg.charges.length, 2);
+    assert.equal(payments.length, 2);
+    assert.equal(payments[0].status, "FAILED");
+    assert.equal(payments[0].attempt, 1);
+    assert.equal(payments[1].status, "SUCCEEDED");
+    assert.equal(payments[1].attempt, 2);
+    assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+  });
+
+  test("[TC-P-11] 이미 결제된 주문 반환값을 변경해도 저장소는 바뀌지 않는다", async () => {
+    const ctx = fresh({
+      pg: createPg([{ ok: true, txId: "TX-P-001" }]),
+      clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+    });
+    const order = seedOrder(ctx, { items: [["P1", 2]] });
+
+    await payOrder(ctx, "u1", order.id);
+    const result = await payOrder(ctx, "u1", order.id);
+    assert.equal(result.alreadyPaid, true);
+
+    result.order.status = "CANCELED";
+    result.order.items[0].quantity = 99;
+    result.payment.status = "FAILED";
+
+    const storedPayments = ctx.store.payments.get(order.id);
+    assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+    assert.equal(ctx.store.orders.get(order.id).items[0].quantity, 2);
+    assert.equal(storedPayments.length, 1);
+    assert.equal(storedPayments[0].status, "SUCCEEDED");
+    assert.equal(ctx.pg.charges.length, 1);
+  });
+
+  test.todo("[TC-P-12] TODO: 취소된 주문 · 남의 주문");
+  test.todo("[TC-P-13] TODO: 동시 요청(Promise.all) — PG 요청은 한 번");
