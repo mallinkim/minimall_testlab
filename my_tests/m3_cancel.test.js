@@ -79,8 +79,93 @@ test("[TC-X-03] 반환된 주문을 바꿔도 저장된 주문은 바뀌지 않�
   assert.equal(storedOrder.items[0].quantity, 2);
 });
 
-test.todo("[TC-X-04] TODO: 환불 실패(ok: false)");
-test.todo("[TC-X-05] TODO: 환불 시간 초과(예외)");
-test.todo("[TC-X-06] TODO: 취소할 수 없는 상태");
-test.todo("[TC-X-07] TODO: 남의 주문 · 없는 주문");
-test.todo("[TC-X-08] TODO: 동시 취소 — 환불과 재고 복원은 한 번");
+// 계약 근거: API_CONTRACT.md 규칙 4 (124, 132), SRS US-10 (57).
+test("[TC-X-04] 환불 실패 시 오류와 PAID 상태 및 미복원 재고를 확인한다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: false, reason: "REFUND_REJECTED" },
+      { ok: true, refundId: "RF-X-04-UNEXPECTED" },
+    ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+  });
+  const order = seedOrder(ctx, { items: [["P1", 2]], status: "PAID" });
+  const payment = ctx.store.payments.get(order.id)[0];
+
+  assert.equal(typeof payment.txId, "string");
+  assert.notEqual(payment.txId, "");
+  assert.equal(payment.amount, 30000);
+  assert.equal(ctx.store.products.get("P1").stock, 8);
+
+  const error = await expectRejectCode(
+    () => cancelOrder(ctx, "u1", order.id),
+    "REFUND_FAILED",
+  );
+  const storedOrder = ctx.store.orders.get(order.id);
+  const storedPayment = ctx.store.payments.get(order.id)[0];
+
+  assert.equal(error.details.reason, "REFUND_REJECTED");
+  assert.equal(ctx.pg.refunds.length, 1);
+  assert.equal(ctx.pg.refunds[0].amount, payment.amount);
+  assert.equal(ctx.pg.refunds[0].amount, 30000);
+  assert.equal(ctx.pg.refunds[0].txId, payment.txId);
+  assert.equal(storedPayment.refund.status, "FAILED");
+  assert.equal(storedPayment.refund.reason, "REFUND_REJECTED");
+  // 팀 가정: 계약은 refund.at의 형식을 정하지 않으므로 존재 여부만 확인한다.
+  assert.equal(Object.hasOwn(storedPayment.refund, "at"), true);
+  assert.equal(storedOrder.status, "PAID");
+  assert.equal(ctx.store.products.get("P1").stock, 8);
+  // 팀 가정: 실패 규칙은 결제 status를 명시적으로 바꾸지 않는다고 본다.
+  assert.notEqual(storedPayment.status, "REFUNDED");
+});
+
+// 계약 근거: API_CONTRACT.md 규칙 4 (124, 131-132), SRS US-10 (57).
+test("[TC-X-05] 환불 실패 뒤 재시도 성공 시 주문·결제·재고가 성공 상태가 된다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: false, reason: "REFUND_REJECTED" },
+      { ok: true, refundId: "RF-X-05" },
+    ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+  });
+  const order = seedOrder(ctx, { items: [["P1", 2]], status: "PAID" });
+  const payment = ctx.store.payments.get(order.id)[0];
+
+  assert.equal(typeof payment.txId, "string");
+  assert.notEqual(payment.txId, "");
+  assert.equal(payment.amount, 30000);
+  assert.equal(ctx.store.products.get("P1").stock, 8);
+
+  const firstError = await expectRejectCode(
+    () => cancelOrder(ctx, "u1", order.id),
+    "REFUND_FAILED",
+  );
+  assert.equal(firstError.details.reason, "REFUND_REJECTED");
+  assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+  assert.equal(ctx.store.products.get("P1").stock, 8);
+
+  const result = await cancelOrder(ctx, "u1", order.id);
+  const storedOrder = ctx.store.orders.get(order.id);
+  const storedPayment = ctx.store.payments.get(order.id)[0];
+
+  assert.equal(ctx.pg.refunds.length, 2);
+  for (const request of ctx.pg.refunds) {
+    assert.equal(request.amount, payment.amount);
+    assert.equal(request.amount, 30000);
+    assert.equal(request.txId, payment.txId);
+  }
+  assert.equal(storedOrder.status, "CANCELED");
+  assert.equal(storedPayment.status, "REFUNDED");
+  assert.equal(storedPayment.refund.status, "SUCCEEDED");
+  assert.equal(storedPayment.refund.refundId, "RF-X-05");
+  // 팀 가정: 계약은 refund.at의 형식을 정하지 않으므로 존재 여부만 확인한다.
+  assert.equal(Object.hasOwn(storedPayment.refund, "at"), true);
+  // 팀 가정: 재시도 성공 결과가 refund를 대체해 이전 실패 reason은 남지 않는다.
+  assert.equal(Object.hasOwn(storedPayment.refund, "reason"), false);
+  assert.equal(ctx.store.products.get("P1").stock, 10);
+  assert.equal(result.order.status, "CANCELED");
+});
+
+test.todo("[TC-X-06] TODO: 환불 시간 초과(예외)");
+test.todo("[TC-X-07] TODO: 취소할 수 없는 상태");
+test.todo("[TC-X-08] TODO: 남의 주문 · 없는 주문");
+test.todo("[TC-X-09] TODO: 동시 취소 — 환불과 재고 복원은 한 번");
