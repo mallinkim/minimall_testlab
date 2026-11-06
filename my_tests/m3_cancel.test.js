@@ -210,6 +210,130 @@ test("[TC-X-06] 환불 시간 초과 시 PG_ERROR와 실패 상태 및 미복원
   assert.notEqual(storedPayment.status, "REFUNDED");
 });
 
-test.todo("[TC-X-07] TODO: 취소할 수 없는 상태");
+// 계약 근거: docs/API_CONTRACT.md §4 규칙 2 (128), 상태 전이표 PREPARING (96).
+test("[TC-X-07a] PREPARING 주문 취소는 거부되고 주문·결제·재고를 유지한다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: true, refundId: "RF-X-07A-UNEXPECTED" },
+    ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+  });
+  const order = seedOrder(ctx, { items: [["P1", 2]], status: "PREPARING" });
+  const stockBeforeCancel = ctx.store.products.get("P1").stock;
+  const payment = ctx.store.payments.get(order.id)[0];
+  const paymentStatusBefore = payment.status;
+
+  assert.equal(stockBeforeCancel, 8);
+  assert.equal(Object.hasOwn(payment, "refund"), false);
+
+  await expectRejectCode(
+    () => cancelOrder(ctx, "u1", order.id),
+    "INVALID_STATE",
+  );
+
+  const storedOrder = ctx.store.orders.get(order.id);
+  const storedPayment = ctx.store.payments.get(order.id)[0];
+  assert.equal(ctx.pg.refunds.length, 0);
+  assert.equal(storedOrder.status, "PREPARING");
+  assert.equal(ctx.store.products.get("P1").stock, stockBeforeCancel);
+  // 팀 가정: 계약은 INVALID_STATE 시 결제 기록의 불변을 명시하지 않는다.
+  assert.equal(storedPayment.status, paymentStatusBefore);
+  assert.equal(Object.hasOwn(storedPayment, "refund"), false);
+});
+
+// 계약 근거: docs/API_CONTRACT.md §4 규칙 2 (128), 상태 전이표 SHIPPING (97).
+// SRS 근거: docs/SRS_諛쒖톸.md 56줄, "예외: '배송중' 상태의 주문을 취소하려 하면 취소가 거부되고 취소할 수 없는 이유가 안내된다."
+test("[TC-X-07b] SHIPPING 주문 취소는 거부되고 주문·결제·재고를 유지한다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: true, refundId: "RF-X-07B-UNEXPECTED" },
+    ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+  });
+  const order = seedOrder(ctx, { items: [["P1", 2]], status: "SHIPPING" });
+  const stockBeforeCancel = ctx.store.products.get("P1").stock;
+  const payment = ctx.store.payments.get(order.id)[0];
+  const paymentStatusBefore = payment.status;
+
+  assert.equal(stockBeforeCancel, 8);
+  assert.equal(Object.hasOwn(payment, "refund"), false);
+
+  await expectRejectCode(
+    () => cancelOrder(ctx, "u1", order.id),
+    "INVALID_STATE",
+  );
+
+  const storedOrder = ctx.store.orders.get(order.id);
+  const storedPayment = ctx.store.payments.get(order.id)[0];
+  assert.equal(ctx.pg.refunds.length, 0);
+  assert.equal(storedOrder.status, "SHIPPING");
+  assert.equal(ctx.store.products.get("P1").stock, stockBeforeCancel);
+  // 팀 가정: 계약은 INVALID_STATE 시 결제 기록의 불변을 명시하지 않는다.
+  assert.equal(storedPayment.status, paymentStatusBefore);
+  assert.equal(Object.hasOwn(storedPayment, "refund"), false);
+});
+
+// 계약 근거: docs/API_CONTRACT.md §4 규칙 2 (128), 상태 전이표 DELIVERED (98).
+test("[TC-X-07c] DELIVERED 주문 취소는 거부되고 주문·결제·재고를 유지한다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: true, refundId: "RF-X-07C-UNEXPECTED" },
+    ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+  });
+  const order = seedOrder(ctx, { items: [["P1", 2]], status: "DELIVERED" });
+  const stockBeforeCancel = ctx.store.products.get("P1").stock;
+  const payment = ctx.store.payments.get(order.id)[0];
+  const paymentStatusBefore = payment.status;
+
+  assert.equal(stockBeforeCancel, 8);
+  assert.equal(Object.hasOwn(payment, "refund"), false);
+
+  await expectRejectCode(
+    () => cancelOrder(ctx, "u1", order.id),
+    "INVALID_STATE",
+  );
+
+  const storedOrder = ctx.store.orders.get(order.id);
+  const storedPayment = ctx.store.payments.get(order.id)[0];
+  assert.equal(ctx.pg.refunds.length, 0);
+  assert.equal(storedOrder.status, "DELIVERED");
+  assert.equal(ctx.store.products.get("P1").stock, stockBeforeCancel);
+  // 팀 가정: 계약은 INVALID_STATE 시 결제 기록의 불변을 명시하지 않는다.
+  assert.equal(storedPayment.status, paymentStatusBefore);
+  assert.equal(Object.hasOwn(storedPayment, "refund"), false);
+});
+
+// 계약 근거: docs/API_CONTRACT.md §4 규칙 2 (128), 상태 전이표 CANCELED (98).
+test("[TC-X-07d] CANCELED 주문 재취소는 거부되고 주문·재고를 유지한다", async () => {
+  const ctx = fresh({
+    pg: createImmediateRefundPg([
+      { ok: true, refundId: "RF-X-07D-UNEXPECTED" },
+    ]),
+    clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+  });
+  const order = seedOrder(ctx, { items: [["P1", 2]] });
+  const firstResult = await cancelOrder(ctx, "u1", order.id);
+  const orderAfterFirstCancel = ctx.store.orders.get(order.id);
+
+  assert.equal(firstResult.order.status, "CANCELED");
+  assert.equal(orderAfterFirstCancel.status, "CANCELED");
+  assert.equal(ctx.store.products.get("P1").stock, 10);
+  assert.equal(ctx.pg.refunds.length, 0);
+
+  const stockBeforeSecondCancel = ctx.store.products.get("P1").stock;
+  assert.equal(stockBeforeSecondCancel, 10);
+
+  await expectRejectCode(
+    () => cancelOrder(ctx, "u1", order.id),
+    "INVALID_STATE",
+  );
+
+  const storedOrder = ctx.store.orders.get(order.id);
+  assert.equal(ctx.pg.refunds.length, 0);
+  assert.equal(storedOrder.status, "CANCELED");
+  assert.equal(ctx.store.products.get("P1").stock, stockBeforeSecondCancel);
+});
+
 test.todo("[TC-X-08] TODO: 남의 주문 · 없는 주문");
 test.todo("[TC-X-09] TODO: 동시 취소 — 환불과 재고 복원은 한 번");
