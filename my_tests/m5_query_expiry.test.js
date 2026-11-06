@@ -252,4 +252,157 @@ test("[TC-Q-02k] 정확히 10건이면 두 번째 페이지는 빈 배열이다"
 	assert.deepEqual(result.items, []);
 });
 
-test.todo("[TC-E-01] TODO: 자동 취소 — 경계 시각 · 여러 건 · 재고 복원");
+// 근거: API_CONTRACT.md 153줄.
+// 잡는 결함: 결제된 주문을 시간이 지났다고 취소하거나 재고를 복원하는 결함.
+test("[TC-E-01a] 시간이 지난 PAID 주문은 건드리지 않는다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const order = seedOrder(ctx, { status: "PAID", deductStock: true });
+	clock.advanceMinutes(31);
+
+	assert.deepEqual(expirePendingOrders(ctx), []);
+	assert.equal(ctx.store.orders.get(order.id).status, "PAID");
+	assert.equal(ctx.store.products.get("P1").stock, 9);
+});
+
+// 근거: API_CONTRACT.md 153줄.
+// 잡는 결함: 준비 중인 주문을 시간이 지났다고 취소하거나 재고를 복원하는 결함.
+test("[TC-E-01b] 시간이 지난 PREPARING 주문은 건드리지 않는다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const order = seedOrder(ctx, { status: "PREPARING", deductStock: true });
+	clock.advanceMinutes(31);
+
+	assert.deepEqual(expirePendingOrders(ctx), []);
+	assert.equal(ctx.store.orders.get(order.id).status, "PREPARING");
+	assert.equal(ctx.store.products.get("P1").stock, 9);
+});
+
+// 근거: API_CONTRACT.md 153줄.
+// 잡는 결함: 배송 중인 주문을 시간이 지났다고 취소하거나 재고를 복원하는 결함.
+test("[TC-E-01c] 시간이 지난 SHIPPING 주문은 건드리지 않는다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const order = seedOrder(ctx, { status: "SHIPPING", deductStock: true });
+	clock.advanceMinutes(31);
+
+	assert.deepEqual(expirePendingOrders(ctx), []);
+	assert.equal(ctx.store.orders.get(order.id).status, "SHIPPING");
+	assert.equal(ctx.store.products.get("P1").stock, 9);
+});
+
+// 근거: API_CONTRACT.md 153줄.
+// 잡는 결함: 배송 완료 주문을 시간이 지났다고 취소하거나 재고를 복원하는 결함.
+test("[TC-E-01d] 시간이 지난 DELIVERED 주문은 건드리지 않는다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const order = seedOrder(ctx, { status: "DELIVERED", deductStock: true });
+	clock.advanceMinutes(31);
+
+	assert.deepEqual(expirePendingOrders(ctx), []);
+	assert.equal(ctx.store.orders.get(order.id).status, "DELIVERED");
+	assert.equal(ctx.store.products.get("P1").stock, 9);
+});
+
+// 근거: API_CONTRACT.md 153줄.
+// 잡는 결함: 이미 취소된 주문을 다시 처리해 재고를 복원하는 결함.
+test("[TC-E-01e] 시간이 지난 CANCELED 주문은 건드리지 않는다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const order = seedOrder(ctx, { status: "CANCELED", deductStock: false });
+	clock.advanceMinutes(31);
+
+	assert.deepEqual(expirePendingOrders(ctx), []);
+	assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+	assert.equal(ctx.store.products.get("P1").stock, 10);
+});
+
+// 근거: API_CONTRACT.md 150, 152줄.
+test("[TC-E-01f] 30분 이상 지난 PENDING_PAYMENT 주문을 취소하고 재고를 복원한다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const order = seedOrder(ctx, { deductStock: true });
+	clock.advanceMinutes(31);
+
+	assert.deepEqual(expirePendingOrders(ctx), ["ORD-0001"]);
+	assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+	assert.equal(ctx.store.products.get("P1").stock, 10);
+});
+
+// 근거: API_CONTRACT.md 150, 152줄.
+test("[TC-E-01g] 취소된 주문번호를 오름차순으로 반환한다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	seedOrder(ctx, { deductStock: false });
+	clock.advanceMinutes(1);
+	seedOrder(ctx, { deductStock: false });
+	clock.advanceMinutes(1);
+	seedOrder(ctx, { deductStock: false });
+	clock.advanceMinutes(33);
+
+	assert.equal(ctx.store.products.get("P1").stock, 10);
+	assert.deepEqual(expirePendingOrders(ctx), ["ORD-0001", "ORD-0002", "ORD-0003"]);
+});
+
+// 근거: API_CONTRACT.md 152줄.
+test("[TC-E-01h] 만료된 주문만 취소하고 아직 유효한 주문은 유지한다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const expiredOrder = seedOrder(ctx, { deductStock: true });
+	clock.advanceMinutes(21);
+	const pendingOrder = seedOrder(ctx, { deductStock: true });
+	clock.advanceMinutes(10);
+
+	assert.deepEqual(expirePendingOrders(ctx), ["ORD-0001"]);
+	assert.equal(ctx.store.orders.get(expiredOrder.id).status, "CANCELED");
+	assert.equal(ctx.store.orders.get(pendingOrder.id).status, "PENDING_PAYMENT");
+	assert.equal(ctx.store.products.get("P1").stock, 9);
+});
+
+// 근거: API_CONTRACT.md 152줄.
+test("[TC-E-01i] 취소 시 주문 수량만큼 재고를 복원한다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	seedOrder(ctx, { items: [["P1", 2]], deductStock: true });
+	clock.advanceMinutes(31);
+
+	expirePendingOrders(ctx);
+	assert.equal(ctx.store.products.get("P1").stock, 10);
+});
+
+// 근거: API_CONTRACT.md 153줄.
+// 잡는 결함: 반복 호출에서 이미 취소된 주문의 재고를 중복 복원하는 결함.
+test("[TC-E-01j] 반복 호출은 재고를 한 번만 복원한다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	seedOrder(ctx, { deductStock: true });
+	clock.advanceMinutes(31);
+
+	assert.deepEqual(expirePendingOrders(ctx), ["ORD-0001"]);
+	assert.deepEqual(expirePendingOrders(ctx), []);
+	assert.equal(ctx.store.products.get("P1").stock, 10);
+});
+
+// 근거: API_CONTRACT.md 150, 152줄.
+test("[TC-E-01k] 지정한 10분 제한 시간을 적용한다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const order = seedOrder(ctx, { deductStock: true });
+	clock.advanceMinutes(11);
+
+	assert.deepEqual(expirePendingOrders(ctx, { timeoutMinutes: 10 }), ["ORD-0001"]);
+	assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+	assert.equal(ctx.store.products.get("P1").stock, 10);
+});
+
+// 근거: API_CONTRACT.md 150, 152줄.
+test("[TC-E-01l] 60분 제한 시간에 아직 이른 주문은 유지한다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const order = seedOrder(ctx, { deductStock: true });
+	clock.advanceMinutes(31);
+
+	assert.deepEqual(expirePendingOrders(ctx, { timeoutMinutes: 60 }), []);
+	assert.equal(ctx.store.orders.get(order.id).status, "PENDING_PAYMENT");
+	assert.equal(ctx.store.products.get("P1").stock, 9);
+});
