@@ -114,5 +114,142 @@ test("[TC-Q-01f] 주문 상세 반환값을 수정해도 저장된 주문은 바
 	});
 });
 
-test.todo("[TC-Q-02] TODO: 주문 목록 — 정렬 · 페이지 · 대표 상품명");
+// 근거: API_CONTRACT.md 143줄, SRS US-09 49줄.
+test("[TC-Q-02a] 시각이 다른 주문은 최신순으로 반환한다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	seedOrder(ctx, { deductStock: false });
+	clock.advanceMinutes(1);
+	seedOrder(ctx, { deductStock: false });
+	clock.advanceMinutes(1);
+	seedOrder(ctx, { deductStock: false });
+
+	const result = listOrders(ctx, "u1");
+	assert.deepEqual(result.items.map((item) => item.orderId), ["ORD-0003", "ORD-0002", "ORD-0001"]);
+});
+
+// 근거: API_CONTRACT.md 143줄.
+test("[TC-Q-02b] 같은 시각이면 주문번호가 큰 주문을 먼저 반환한다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	seedOrder(ctx, { deductStock: false });
+	seedOrder(ctx, { deductStock: false });
+
+	const result = listOrders(ctx, "u1");
+	assert.deepEqual(result.items.map((item) => item.orderId), ["ORD-0002", "ORD-0001"]);
+});
+
+// 근거: API_CONTRACT.md 144줄.
+test("[TC-Q-02c] 기본 페이지는 10건을 반환하고 전체 건수와 양끝 주문을 표시한다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	for (let index = 0; index < 11; index += 1) {
+		seedOrder(ctx, { deductStock: false });
+	}
+
+	const result = listOrders(ctx, "u1");
+	assert.equal(result.page, 1);
+	assert.equal(result.pageSize, 10);
+	assert.equal(result.total, 11);
+	assert.equal(result.items.length, 10);
+	assert.equal(result.items[0].orderId, "ORD-0011");
+	assert.equal(result.items[9].orderId, "ORD-0002");
+});
+
+// 근거: API_CONTRACT.md 144줄.
+test("[TC-Q-02d] 11건 중 두 번째 페이지에는 마지막 주문 한 건이 나온다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	for (let index = 0; index < 11; index += 1) {
+		seedOrder(ctx, { deductStock: false });
+	}
+
+	const result = listOrders(ctx, "u1", { page: 2, pageSize: 10 });
+	assert.equal(result.page, 2);
+	assert.equal(result.pageSize, 10);
+	assert.equal(result.total, 11);
+	assert.deepEqual(result.items.map((item) => item.orderId), ["ORD-0001"]);
+});
+
+// 근거: API_CONTRACT.md 144줄.
+test("[TC-Q-02e] 범위를 벗어난 페이지의 items는 빈 배열이다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	for (let index = 0; index < 11; index += 1) {
+		seedOrder(ctx, { deductStock: false });
+	}
+
+	const result = listOrders(ctx, "u1", { page: 3, pageSize: 10 });
+	assert.equal(result.page, 3);
+	assert.equal(result.pageSize, 10);
+	assert.equal(result.total, 11);
+	assert.deepEqual(result.items, []);
+});
+
+// 근거: API_CONTRACT.md 145줄. 잡는 결함: 한 종류 주문에 " 외 0건"을 붙이는 결함.
+test("[TC-Q-02f] 한 종류 상품의 대표 상품명은 상품명 그대로다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	seedOrder(ctx, { items: [["P1", 2]], deductStock: false });
+
+	const result = listOrders(ctx, "u1");
+	assert.equal(result.items[0].representativeName, "무선 마우스");
+});
+
+// 근거: API_CONTRACT.md 145줄.
+test("[TC-Q-02g] 두 종류 상품의 대표 상품명과 목록 항목 전체를 반환한다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	seedOrder(ctx, { items: [["P1", 2], ["P2", 1]], deductStock: false });
+
+	const result = listOrders(ctx, "u1");
+	assert.deepEqual(result.items[0], {
+		orderId: "ORD-0001",
+		createdAt: "2026-10-28T09:00:00.000Z",
+		representativeName: "무선 마우스 외 1건",
+		totalAmount: 89000,
+		status: "PENDING_PAYMENT",
+	});
+});
+
+// 근거: API_CONTRACT.md 145줄.
+test("[TC-Q-02h] 세 종류 상품의 대표 상품명에는 나머지 두 종류 수가 붙는다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	seedOrder(ctx, { items: [["P1", 1], ["P2", 1], ["P5", 1]], deductStock: false });
+
+	const result = listOrders(ctx, "u1");
+	assert.equal(result.items[0].representativeName, "무선 마우스 외 2건");
+});
+
+// 근거: API_CONTRACT.md 146줄.
+test("[TC-Q-02i] u1의 목록에는 u2의 주문이 포함되지 않는다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	seedOrder(ctx, { userId: "u2", deductStock: false });
+	seedOrder(ctx, { userId: "u1", deductStock: false });
+
+	const result = listOrders(ctx, "u1");
+	assert.equal(result.total, 1);
+	assert.deepEqual(result.items.map((item) => item.orderId), ["ORD-0002"]);
+});
+
+// 근거: API_CONTRACT.md 144, 146줄, SRS US-09 50줄. items: []는 계약을 따른 팀 가정.
+test("[TC-Q-02j] 주문이 없는 사용자의 목록은 빈 결과다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	seedOrder(ctx, { userId: "u2", deductStock: false });
+
+	const result = listOrders(ctx, "u1");
+	assert.equal(result.page, 1);
+	assert.equal(result.pageSize, 10);
+	assert.equal(result.total, 0);
+	assert.deepEqual(result.items, []);
+});
+
+// 근거: API_CONTRACT.md 144줄.
+test("[TC-Q-02k] 정확히 10건이면 두 번째 페이지는 빈 배열이다", () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	for (let index = 0; index < 10; index += 1) {
+		seedOrder(ctx, { deductStock: false });
+	}
+
+	const result = listOrders(ctx, "u1", { page: 2, pageSize: 10 });
+	assert.equal(result.page, 2);
+	assert.equal(result.pageSize, 10);
+	assert.equal(result.total, 10);
+	assert.deepEqual(result.items, []);
+});
+
 test.todo("[TC-E-01] TODO: 자동 취소 — 경계 시각 · 여러 건 · 재고 복원");
