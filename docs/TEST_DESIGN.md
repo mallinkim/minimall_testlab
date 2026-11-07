@@ -76,14 +76,14 @@
 | TC-O-21 | changeStatus | 2장 상태 전이표 100행 | 허용되지 않은 전이 30개 | 표에 없는 모든 (현재, 다음) 조합 | INVALID_STATE, details { from, to }, 저장된 상태 그대로 | 계약서 2장 100행 |
 | TC-O-22 | changeStatus | 2장 상태 전이 설명 | 존재하지 않는 주문 | 없는 주문 번호 | NOT_FOUND (details는 계약에 없어 단언하지 않음) | 계약서 2장 상태 전이 설명 |
 | TC-O-23 | changeStatus | 0장 공통 규칙 | 반환값은 복사본 | 반환 주문 수정 | 저장된 주문은 그대로 | 계약서 0장 공통 규칙(복사본) |
-| TC-P-01 | payOrder | 3장 도입부 (102~108줄) [줄 번호 확인] | 본인의 결제대기 주문, PG 성공 | P1×2 (30000), txId "TX-P-001" | 반환값 전체 deepEqual, 주문 PAID, 결제 기록 SUCCEEDED·amount 30000·paidAt 있음, PG 요청 1건(orderId·amount 30000·멱등성 키 비어 있지 않음), 카드 정보 필드 없음 | 계약서 3장 도입부 (102~108줄) [줄 번호 확인] |
-| TC-P-02 | payOrder | 3장 규칙 6-1 (115줄) [줄 번호 확인], 데이터 38줄 | 성공 1회 | P1×2 | 결제 기록 1건, attempt 1 | 계약서 3장 규칙 6-1 (115줄) [줄 번호 확인], 데이터 38줄 |
+| TC-P-01 | payOrder | 3장 규칙 4, 5, 9 (112, 113, 118줄) | 본인의 결제대기 주문, PG 성공 | P1×2 (30000), txId "TX-P-001" | 반환값 전체 deepEqual, 주문 PAID, 결제 기록 SUCCEEDED·amount 30000·paidAt 있음, PG 요청 1건(orderId·amount 30000·멱등성 키 비어 있지 않음), 카드 정보 필드 없음 | 계약서 3장 규칙 4, 5, 9 (112, 113, 118줄) |
+| TC-P-02 | payOrder | 3장 규칙 6-1 (115줄), 데이터 38줄 | 성공 1회 | P1×2 | 결제 기록 1건, attempt 1 | 계약서 3장 규칙 6-1 (115줄), 데이터 38줄 |
 | TC-P-03 | payOrder | 공통 13줄 | 성공 후 반환 객체를 변경 | 반환 order·payment 수정 | 저장된 주문(PAID, 수량 2)·결제 기록(SUCCEEDED, 30000, txId) 불변 | 계약서 공통 13줄 |
-| TC-P-04 | payOrder | 3장 (112줄) [줄 번호 확인] | PG 실패 응답 | `{ok:false, reason:"LIMIT_EXCEEDED"}` | PAYMENT_FAILED, details.reason "LIMIT_EXCEEDED", 주문 PENDING_PAYMENT 유지, 실패 기록 1건(attempt 1, failureReason), PG 1회 | 계약서 3장 (112줄) [줄 번호 확인] |
-| TC-P-05 | payOrder | 3장 (113줄) [줄 번호 확인] | PG 시간 초과(예외) | `new Error("PG_TIMEOUT")` | PAYMENT_FAILED, details.reason "PG_ERROR"(≠ PG_TIMEOUT), 주문 PENDING_PAYMENT, 실패 기록 failureReason "PG_ERROR" | 계약서 3장 (113줄) [줄 번호 확인] |
-| TC-P-06 | payOrder | 3장 규칙 6, 6-1 (114~115줄) [줄 번호 확인] | 실패 후 같은 주문 재결제 | 1차 LIMIT_EXCEEDED, 2차 성공 | 기록 2건(FAILED attempt 1 / SUCCEEDED attempt 2), alreadyPaid false, PAID, PG 2회·금액 30000·멱등성 키 서로 다름 | 계약서 3장 규칙 6, 6-1 (114~115줄) [줄 번호 확인] |
-| TC-P-07 | payOrder | 3장 규칙 6, 6-1 (114~115줄) [줄 번호 확인] | 시간 초과 후 재결제 | 1차 예외, 2차 성공 | TC-P-06과 같은 구조, 1차 failureReason "PG_ERROR" | 계약서 3장 규칙 6, 6-1 (114~115줄) [줄 번호 확인] |
-| TC-P-08 | payOrder | 3장 규칙 6, 6-1 (114~115줄) [줄 번호 확인] | 연속 실패 2회 후 성공 | 실패, 실패, 성공 | attempt 1·2·3, 멱등성 키 3개 모두 서로 다름, PAID | 계약서 3장 규칙 6, 6-1 (114~115줄) [줄 번호 확인] |
+| TC-P-04 | payOrder | 3장 규칙 6 (114줄) | PG 실패 응답 | `{ok:false, reason:"LIMIT_EXCEEDED"}` | PAYMENT_FAILED, details.reason "LIMIT_EXCEEDED", 주문 PENDING_PAYMENT 유지, 실패 기록 1건(attempt 1, failureReason), PG 1회 | 계약서 3장 규칙 6 (114줄) |
+| TC-P-05 | payOrder | 3장 규칙 6 (114줄) | PG 시간 초과(예외) | `new Error("PG_TIMEOUT")` | PAYMENT_FAILED, details.reason "PG_ERROR"(≠ PG_TIMEOUT), 주문 PENDING_PAYMENT, 실패 기록 failureReason "PG_ERROR" | 계약서 3장 규칙 6 (114줄) |
+| TC-P-06 | payOrder | 3장 규칙 4, 6, 6-1 (112, 114~115줄) | 실패 후 같은 주문 재결제 | 1차 LIMIT_EXCEEDED, 2차 성공 | 기록 2건(FAILED attempt 1 / SUCCEEDED attempt 2), alreadyPaid false, PAID, PG 2회·금액 30000·멱등성 키 서로 다름 | 계약서 3장 규칙 4, 6, 6-1 (112, 114~115줄) |
+| TC-P-07 | payOrder | 3장 규칙 4, 6, 6-1 (112, 114~115줄) | 시간 초과 후 재결제 | 1차 예외, 2차 성공 | TC-P-06과 같은 구조, 1차 failureReason "PG_ERROR" | 계약서 3장 규칙 4, 6, 6-1 (112, 114~115줄) |
+| TC-P-08 | payOrder | 3장 규칙 4, 6, 6-1 (112, 114~115줄) | 연속 실패 2회 후 성공 | 실패, 실패, 성공 | attempt 1·2·3, 멱등성 키 3개 모두 서로 다름, PAID | 계약서 3장 규칙 4, 6, 6-1 (112, 114~115줄) |
 | TC-P-09 | payOrder | 3장 규칙 2 (110줄) | 이미 결제된 주문 재결제 | 성공 후 같은 주문 다시 호출 | 첫 성공 결과 + alreadyPaid true, PG 미호출(1회 유지), 기록 1건 | 계약서 3장 규칙 2 (110줄) ("기존 결과" 해석은 팀 가정) |
 | TC-P-10 | payOrder | 3장 규칙 2 (110줄) | 실패 후 성공한 주문 재결제 | 실패→성공→재호출 | 성공 결과(attempt 2) 반환, alreadyPaid true, PG 2회·기록 2건 유지 | 계약서 3장 규칙 2 (110줄) |
 | TC-P-11 | payOrder | 공통 13줄 | 이미 결제된 주문의 반환값 변경 | alreadyPaid 결과 수정 | 저장소(PAID, 수량 2, 기록 1건) 불변 | 계약서 공통 13줄 |
