@@ -9,12 +9,17 @@ const { listTests, runTests, coverage } = require("./lib");
 const { spawnSync } = require("child_process");
 const path = require("path");
 
-// TODO 1: 팀의 기준을 숫자로 정한다. (근거를 docs/TEST_REPORT.md 에 쓴다)
-//   - 너무 낮으면 약한 테스트가 통과하고, 너무 높으면 팀의 테스트도 막힌다.
 const THRESHOLDS = {
-  lineCoverage: 0, // 대상 소스의 평균 줄 커버리지(%)
-  mutationScore: 0, // 공개 변이 도구의 변이 점수(%)
+  lineCoverage: 95,
+  mutationScore: 85,
 };
+
+const args = process.argv.slice(2);
+const testsOption = args.indexOf("--tests");
+const testsDir = testsOption >= 0 && args[testsOption + 1] && !args[testsOption + 1].startsWith("--")
+  ? args[testsOption + 1]
+  : "my_tests";
+const testFiles = listTests(testsDir);
 
 const results = [];
 function step(name, ok, detail) {
@@ -23,16 +28,44 @@ function step(name, ok, detail) {
 }
 
 // 1단계: 테스트가 통과한다 (제공됨)
-const t = runTests(listTests("my_tests"));
-step("테스트", t.ok, `${t.pass}/${t.tests - t.todo} 통과 (todo ${t.todo}개 제외)`);
+const t = testFiles.length ? runTests(testFiles) : { ok: false, pass: 0, tests: 0, todo: 0 };
+step("테스트", t.ok, `${testsDir}: ${t.pass}/${t.tests - t.todo} 통과 (todo ${t.todo}개 제외)`);
 
 // 2단계: 줄 커버리지가 기준 이상이다
-// TODO 2: coverage(listTests("my_tests")) 의 line(평균 줄 %)을 THRESHOLDS.lineCoverage 와 비교해 step() 을 호출한다.
+const c = testFiles.length ? coverage(testFiles) : { ok: false, line: 0 };
+step(
+  "줄 커버리지",
+  c.ok && c.line >= THRESHOLDS.lineCoverage,
+  `${testsDir}: ${c.line}% (기준 ${THRESHOLDS.lineCoverage}%)`,
+);
 
 // 3단계: 변이 점수가 기준 이상이다
-// TODO 3: spawnSync(process.execPath, [path.join(__dirname, "mutate.js"), "--json"], { encoding: "utf8" }) 로
-//         변이 도구를 실행하고, 출력(JSON)의 score 를 THRESHOLDS.mutationScore 와 비교해 step() 을 호출한다.
-//         (도구가 원본 테스트 실패로 종료 코드 2 를 돌려주면 이 단계는 실패로 처리한다)
+const mutation = spawnSync(
+  process.execPath,
+  [path.join(__dirname, "mutate.js"), "--tests", testsDir, "--json"],
+  { encoding: "utf8", cwd: path.resolve(__dirname, ".."), maxBuffer: 10 * 1024 * 1024 },
+);
+let mutationOk = false;
+let mutationDetail;
+if (mutation.error) {
+  mutationDetail = `변이 도구 실행 실패: ${mutation.error.message}`;
+} else if (mutation.status !== 0) {
+  const diagnostic = (mutation.stderr || "").trim();
+  mutationDetail = `변이 도구 종료 코드 ${mutation.status}${diagnostic ? `: ${diagnostic}` : ""}`;
+} else {
+  try {
+    const report = JSON.parse(mutation.stdout);
+    if (typeof report.score !== "number" || !Number.isFinite(report.score)) {
+      mutationDetail = "변이 도구 JSON에 유효한 score가 없습니다.";
+    } else {
+      mutationOk = report.score >= THRESHOLDS.mutationScore;
+      mutationDetail = `${testsDir}: ${report.score}% (기준 ${THRESHOLDS.mutationScore}%)`;
+    }
+  } catch (error) {
+    mutationDetail = `변이 도구 JSON을 읽을 수 없습니다: ${error.message}`;
+  }
+}
+step("변이 점수", mutationOk, mutationDetail);
 
 // 4단계(선택): 불안정 검사 — node scripts/repeat.js flaky_tests --times 10 --json 이 통과하는가?
 
