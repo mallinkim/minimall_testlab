@@ -8,6 +8,19 @@ const { payOrder } = require("../src/payment");
 const { cancelOrder } = require("../src/cancel");
 const { expectCode, expectRejectCode, fresh } = require("./_helpers");
 
+function createImmediateRefundPg(responses) {
+	const pg = {
+		refunds: [],
+		async refund(request) {
+			pg.refunds.push({ ...request });
+			const response = responses.shift();
+			if (response instanceof Error) throw response;
+			return response;
+		},
+	};
+	return pg;
+}
+
 // 근거: API_CONTRACT.md 137줄(반환 형태), SRS US-09 49줄(정상).
 test("[TC-Q-01a] 주문 상세는 본인 주문의 모든 필드를 반환한다", () => {
 	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
@@ -409,6 +422,28 @@ test("[TC-E-01l] 60분 제한 시간에 아직 이른 주문은 유지한다", (
 	assert.equal(ctx.store.products.get("P1").stock, 9);
 });
 
+// 근거: API_CONTRACT.md 35, 152줄.
+// 팀 가정: 계약은 STOPPED 상품의 재고 복원 여부를 직접 정하지 않아 상태와 무관하게 복원한다고 해석한다.
+// 잡는 결함: STOPPED 상품의 자동 취소에서 재고를 복원하지 않는 결함.
+test("[TC-E-01m] STOPPED 상품의 만료 주문도 재고를 복원한다", () => {
+	const clock = createFakeClock("2026-10-28T09:00:00.000Z");
+	const ctx = fresh({ clock });
+	const stockBeforeOrder = ctx.store.products.get("P1").stock;
+	const order = seedOrder(ctx, { items: [["P1", 2]], deductStock: true });
+	const stockAfterOrder = ctx.store.products.get("P1").stock;
+
+	assert.equal(stockBeforeOrder, 10);
+	assert.equal(stockAfterOrder, 8);
+	ctx.store.products.get("P1").status = "STOPPED";
+	assert.equal(ctx.store.products.get("P1").status, "STOPPED");
+	assert.equal(ctx.store.products.get("P1").stock, 8);
+	clock.advanceMinutes(31);
+
+	assert.deepEqual(expirePendingOrders(ctx), ["ORD-0001"]);
+	assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+	assert.equal(ctx.store.products.get("P1").stock, 10);
+});
+
 // 근거: API_CONTRACT.md 38, 39, 45, 117줄. 팀 가정: 서로 다른 결제 기록의 id는 달라야 한다.
 // 잡는 결함: 카운터 증가가 삭제되어 서로 다른 주문의 결제 기록에 같은 id가 발급되는 결함.
 test("[TC-P-19a] 서로 다른 주문의 결제 기록은 서로 다른 id를 가진다", async () => {
@@ -468,6 +503,62 @@ test("[TC-X-10b] 삭제 상품 뒤에 있는 상품도 재고를 복원하며 �
 
 	assert.equal(result.order.status, "CANCELED");
 	assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+	assert.equal(ctx.store.products.get("P1").stock, 10);
+});
+
+// 근거: API_CONTRACT.md 35, 129줄.
+// 팀 가정: 계약은 STOPPED 상품의 재고 복원 여부를 직접 정하지 않아 상태와 무관하게 복원한다고 해석한다.
+// 잡는 결함: STOPPED 상품의 결제대기 취소에서 재고를 복원하지 않는 결함.
+test("[TC-X-11a] STOPPED 상품의 결제대기 주문도 재고를 복원한다", async () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	const stockBeforeOrder = ctx.store.products.get("P1").stock;
+	const order = seedOrder(ctx, { items: [["P1", 2]], deductStock: true });
+	const stockAfterOrder = ctx.store.products.get("P1").stock;
+
+	assert.equal(stockBeforeOrder, 10);
+	assert.equal(stockAfterOrder, 8);
+	ctx.store.products.get("P1").status = "STOPPED";
+	assert.equal(ctx.store.products.get("P1").status, "STOPPED");
+	assert.equal(ctx.store.products.get("P1").stock, 8);
+
+	const result = await cancelOrder(ctx, "u1", order.id);
+
+	assert.equal(result.order.status, "CANCELED");
+	assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+	assert.equal(ctx.pg.refunds.length, 0);
+	assert.equal(ctx.store.products.get("P1").stock, 10);
+});
+
+// 근거: API_CONTRACT.md 35, 130-131줄.
+// 팀 가정: 계약은 STOPPED 상품의 재고 복원 여부를 직접 정하지 않아 상태와 무관하게 복원한다고 해석한다.
+// 잡는 결함: STOPPED 상품의 환불 성공 취소에서 재고를 복원하지 않는 결함.
+test("[TC-X-11b] STOPPED 상품의 PAID 주문도 환불 후 재고를 복원한다", async () => {
+	const pg = createImmediateRefundPg([{ ok: true, refundId: "RF-X-11B" }]);
+	const ctx = fresh({
+		pg,
+		clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+	});
+	const stockBeforeOrder = ctx.store.products.get("P1").stock;
+	const order = seedOrder(ctx, { items: [["P1", 2]], status: "PAID", deductStock: true });
+	const stockAfterOrder = ctx.store.products.get("P1").stock;
+	const payment = ctx.store.payments.get(order.id)[0];
+
+	assert.equal(stockBeforeOrder, 10);
+	assert.equal(stockAfterOrder, 8);
+	assert.equal(payment.amount, 30000);
+	ctx.store.products.get("P1").status = "STOPPED";
+	assert.equal(ctx.store.products.get("P1").status, "STOPPED");
+	assert.equal(ctx.store.products.get("P1").stock, 8);
+
+	const result = await cancelOrder(ctx, "u1", order.id);
+
+	assert.equal(ctx.pg.refunds.length, 1);
+	assert.equal(ctx.pg.refunds[0].amount, 30000);
+	assert.equal(ctx.pg.refunds[0].txId, payment.txId);
+	assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+	assert.equal(ctx.store.payments.get(order.id)[0].status, "REFUNDED");
+	assert.equal(ctx.store.payments.get(order.id)[0].refund.status, "SUCCEEDED");
+	assert.equal(result.order.status, "CANCELED");
 	assert.equal(ctx.store.products.get("P1").stock, 10);
 });
 
