@@ -5,6 +5,7 @@ const { seedOrder, createFakeClock } = require("../src/testkit");
 const { getOrderDetail, listOrders } = require("../src/orderQuery");
 const { expirePendingOrders } = require("../src/expiry");
 const { payOrder } = require("../src/payment");
+const { cancelOrder } = require("../src/cancel");
 const { expectCode, expectRejectCode, fresh } = require("./_helpers");
 
 // 근거: API_CONTRACT.md 137줄(반환 형태), SRS US-09 49줄(정상).
@@ -437,6 +438,37 @@ test("[TC-P-19a] 서로 다른 주문의 결제 기록은 서로 다른 id를 �
 	assert.equal(typeof secondId, "string");
 	assert.equal(secondId.length > 0, true);
 	assert.notEqual(firstId, secondId);
+});
+
+// 근거: API_CONTRACT.md 129, 142줄. 팀 가정: 삭제 방식은 Map.delete이며, 삭제된 상품이 있어도 취소는 성공한다.
+// 잡는 결함: 삭제된 상품의 재고를 복원하려다 TypeError가 나서 취소가 완료되지 않는 결함.
+test("[TC-X-10a] 상품이 삭제된 단일 상품 주문도 취소된다", async () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	const order = seedOrder(ctx, { items: [["P2", 1]], deductStock: true });
+	ctx.store.products.delete("P2");
+
+	const result = await cancelOrder(ctx, "u1", order.id);
+
+	assert.equal(result.order.status, "CANCELED");
+	assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+});
+
+// 근거: API_CONTRACT.md 129, 142줄. 팀 가정: 삭제 방식은 Map.delete이며, 삭제된 상품이 있어도 취소는 성공한다.
+// 잡는 결함: 삭제된 상품의 재고를 복원하려다 TypeError가 나서 취소가 완료되지 않는 결함.
+// 잡는 결함: 삭제된 상품을 만나면 중단해 뒤의 상품 재고를 복원하지 않는 결함.
+test("[TC-X-10b] 삭제 상품 뒤에 있는 상품도 재고를 복원하며 취소된다", async () => {
+	const ctx = fresh({ clock: createFakeClock("2026-10-28T09:00:00.000Z") });
+	const order = seedOrder(ctx, {
+		items: [["P2", 1], ["P1", 2]],
+		deductStock: true,
+	});
+	ctx.store.products.delete("P2");
+
+	const result = await cancelOrder(ctx, "u1", order.id);
+
+	assert.equal(result.order.status, "CANCELED");
+	assert.equal(ctx.store.orders.get(order.id).status, "CANCELED");
+	assert.equal(ctx.store.products.get("P1").stock, 10);
 });
 
 // 근거: API_CONTRACT.md 38, 39, 45, 115줄. 팀 가정: 서로 다른 결제 기록의 id는 달라야 한다.
