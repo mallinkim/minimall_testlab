@@ -212,6 +212,7 @@
   - 결과: npm run ci → 테스트 171/171, 줄 100%, 변이 97.4% → CI 통과. node scripts/ci.js --tests ai_tests → 테스트 39/39, 줄 97.57% 통과, 변이 58.2% 실패 → CI 실패. 변경 파일은 scripts/ci.js, .github/workflows/ci.yml 두 개뿐 (git status 확인)
   - 사람이 확인한 범위: ci.js 를 직접 읽어 TODO 1~3 이 기준값 · 비교 · 종료 코드 처리까지 들어갔는지, 제공된 1단계 동작이 유지되는지, 기본 폴더가 my_tests 라 채점 방식(my_tests 자리에 ai_tests 를 넣기)에서도 동작하는지 확인. ci.yml 이 CI_GUIDE 예시와 같은지 확인 후 Keep
   - 에이전트의 실수: 없음 (첫 실행 실패 없음). 재시도 횟수: 0
-
+  - 검증자(곽민주): pull 후 자기 컴퓨터에서 두 명령을 직접 실행 — npm run ci → 테스트 171/171, 줄 100%, 변이 97.4%, CI 통과 / node scripts/ci.js --tests ai_tests → 테스트 39/39, 줄 97.57%, 변이 58.2% ✘, CI 실패. 터미널 화면으로 결과를 받아 에이전트 실행 결과와 수치가 일치함을 확인
+  
 ### [Mission 5] 작업 단위:
 -
