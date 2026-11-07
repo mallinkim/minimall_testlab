@@ -4,7 +4,8 @@ const assert = require("node:assert/strict");
 const { seedOrder, createFakeClock } = require("../src/testkit");
 const { getOrderDetail, listOrders } = require("../src/orderQuery");
 const { expirePendingOrders } = require("../src/expiry");
-const { expectCode, fresh } = require("./_helpers");
+const { payOrder } = require("../src/payment");
+const { expectCode, expectRejectCode, fresh } = require("./_helpers");
 
 // 근거: API_CONTRACT.md 137줄(반환 형태), SRS US-09 49줄(정상).
 test("[TC-Q-01a] 주문 상세는 본인 주문의 모든 필드를 반환한다", () => {
@@ -405,4 +406,67 @@ test("[TC-E-01l] 60분 제한 시간에 아직 이른 주문은 유지한다", (
 	assert.deepEqual(expirePendingOrders(ctx, { timeoutMinutes: 60 }), []);
 	assert.equal(ctx.store.orders.get(order.id).status, "PENDING_PAYMENT");
 	assert.equal(ctx.store.products.get("P1").stock, 9);
+});
+
+// 근거: API_CONTRACT.md 38, 39, 45, 117줄. 팀 가정: 서로 다른 결제 기록의 id는 달라야 한다.
+// 잡는 결함: 카운터 증가가 삭제되어 서로 다른 주문의 결제 기록에 같은 id가 발급되는 결함.
+test("[TC-P-19a] 서로 다른 주문의 결제 기록은 서로 다른 id를 가진다", async () => {
+	const pg = {
+		async charge() {
+			return { ok: true, txId: "TX-P-19A" };
+		},
+	};
+	const ctx = fresh({
+		pg,
+		clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+	});
+	const firstOrder = seedOrder(ctx, { userId: "u1", deductStock: false });
+	const secondOrder = seedOrder(ctx, { userId: "u1", deductStock: false });
+
+	await payOrder(ctx, "u1", firstOrder.id);
+	await payOrder(ctx, "u1", secondOrder.id);
+
+	const firstPayments = ctx.store.payments.get(firstOrder.id);
+	const secondPayments = ctx.store.payments.get(secondOrder.id);
+	assert.equal(firstPayments.length, 1);
+	assert.equal(secondPayments.length, 1);
+	const firstId = firstPayments[0].id;
+	const secondId = secondPayments[0].id;
+	assert.equal(typeof firstId, "string");
+	assert.equal(firstId.length > 0, true);
+	assert.equal(typeof secondId, "string");
+	assert.equal(secondId.length > 0, true);
+	assert.notEqual(firstId, secondId);
+});
+
+// 근거: API_CONTRACT.md 38, 39, 45, 115줄. 팀 가정: 서로 다른 결제 기록의 id는 달라야 한다.
+// 잡는 결함: 카운터 증가가 삭제되어 재시도 결제 기록에 같은 id가 발급되는 결함.
+test("[TC-P-19b] 실패 뒤 재시도한 결제 기록은 서로 다른 id를 가진다", async () => {
+	const responses = [
+		{ ok: false, reason: "DECLINED" },
+		{ ok: true, txId: "TX-P-19B" },
+	];
+	const pg = {
+		async charge() {
+			return responses.shift();
+		},
+	};
+	const ctx = fresh({
+		pg,
+		clock: createFakeClock("2026-10-28T09:00:00.000Z"),
+	});
+	const order = seedOrder(ctx, { userId: "u1", deductStock: false });
+
+	await expectRejectCode(() => payOrder(ctx, "u1", order.id), "PAYMENT_FAILED");
+	await payOrder(ctx, "u1", order.id);
+
+	const payments = ctx.store.payments.get(order.id);
+	assert.equal(payments.length, 2);
+	const firstId = payments[0].id;
+	const secondId = payments[1].id;
+	assert.equal(typeof firstId, "string");
+	assert.equal(firstId.length > 0, true);
+	assert.equal(typeof secondId, "string");
+	assert.equal(secondId.length > 0, true);
+	assert.notEqual(firstId, secondId);
 });
