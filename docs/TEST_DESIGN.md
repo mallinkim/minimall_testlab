@@ -147,6 +147,9 @@ TC-R-01~37은 Mission 2에서 ai_tests의 결함을 고친 테스트(my_tests/m2
 | TC-E-01k | expirePendingOrders | 6장 (150줄) | 사용자 지정 타임아웃 10분 | {timeoutMinutes:10}, 11분 경과 | 취소됨 | 계약서 6장 (150줄) |
 | TC-E-01l | expirePendingOrders | 6장 (150줄) | 사용자 지정 타임아웃 60분 | {timeoutMinutes:60}, 31분 경과 | [], PENDING 유지, 재고 9 | 계약서 6장 (150줄) |
 | TC-E-01m | expirePendingOrders | 6장 규칙 1 (152줄), 데이터 구조 35줄 | 주문 뒤 상품이 STOPPED된 결제대기 주문, 31분 경과 | P1×2, 재고 10→8, STOPPED | ["ORD-0001"], CANCELED, 재고 10 | 계약서 6장 규칙 1 (152줄), 데이터 구조 35줄 (STOPPED여도 복원은 팀 가정) |
+| TC-H-01 | payOrder · expirePendingOrders | 3장 규칙 3·6 (111, 114줄), 6장 규칙 1 (152줄) | 결제 실패 후 정확히 30분 경과해 만료된 주문을 다시 결제 | P1×2, 재고 10→8, PG {ok:false, reason:"DECLINED"}, advanceMinutes(30) | PAYMENT_FAILED(reason DECLINED)·PENDING_PAYMENT 유지·PG 1회 → 만료 ["ORD-0001"]·CANCELED·재고 10 → 재결제 INVALID_STATE·PG 1회 그대로·재고 10 | 계약서 3장 규칙 3·6 (111, 114줄), 6장 규칙 1 (152줄, "30분 이상"이라 경계 포함) |
+| TC-H-02 | payOrder · expirePendingOrders | 3장 규칙 5 (113줄), 6장 규칙 2 (153줄) | 정확히 30분이 지난 시점에 결제 성공 후 만료 함수 호출 | P1×2, 재고 10→8, PG {ok:true, txId:"TX-H-02"}, advanceMinutes(30) | 결제 성공·PAID·PG 1회, 만료 [] , PAID 유지·재고 8 | 계약서 3장 규칙 5 (113줄), 6장 규칙 2 (153줄) (30분 시점에도 결제가 허용된다는 해석은 팀 가정) |
+| TC-H-03 | expirePendingOrders · cancelOrder | 4장 규칙 2 (128줄), 6장 규칙 1 (152줄) | 만료로 CANCELED가 된 주문을 다시 취소 | P1×2, 재고 10→8, advanceMinutes(30) | 만료 ["ORD-0001"]·재고 10 → cancelOrder INVALID_STATE·CANCELED 유지·재고 10(12 아님)·PG 환불 0회 | 계약서 4장 규칙 2 (128줄), 6장 규칙 1 (152줄) |
 
 ## 2. 설계 → 테스트 추적표 (cart · order · 결제 · 취소 · 주문 조회 · 자동 취소)
 | 케이스 ID | 테스트 파일 · 이름 | 결과(통과 / 변이를 죽임 / 보류) |
@@ -292,6 +295,9 @@ TC-R-01~37은 Mission 2에서 ai_tests의 결함을 고친 테스트(my_tests/m2
 | TC-E-01k | my_tests/m5_query_expiry.test.js · [TC-E-01k] 지정한 10분 제한 시간을 적용한다 | 통과 |
 | TC-E-01l | my_tests/m5_query_expiry.test.js · [TC-E-01l] 60분 제한 시간에 아직 이른 주문은 유지한다 | 통과 |
 | TC-E-01m | my_tests/m5_query_expiry.test.js · [TC-E-01m] STOPPED 상품의 만료 주문도 재고를 복원한다 | 통과 (같은 결함) |
+| TC-H-01 | my_tests/challenge.test.js · [TC-H-01] 결제 실패한 주문은 30분 경계에서 만료되고 다시 결제할 수 없다 | 통과 (잡는 결함: 결제 실패 후 만료되지 않거나, 만료 주문이 다시 결제되는 결함) |
+| TC-H-02 | my_tests/challenge.test.js · [TC-H-02] 정확히 30분에 결제된 주문은 만료 처리되지 않는다 | 통과 (잡는 결함: 이미 결제된 주문을 만료 처리하는 결함) |
+| TC-H-03 | my_tests/challenge.test.js · [TC-H-03] 만료로 취소된 주문은 다시 취소할 수 없고 재고도 복원하지 않는다 | 통과 (잡는 결함: 만료로 취소된 주문을 다시 취소해 재고를 중복 복원하는 결함) |
 
 ## 3. AI 에게 맡긴 부분과 사람이 확인한 부분 (cart · order)
 
@@ -351,6 +357,7 @@ Mission 3, Mission 5 테스트에서 계약서가 직접 정하지 않은 값이
 | TC-X-09a, TC-X-09b | 같은 주문의 동시 취소에서 두 번째 호출의 결과는 "성공 또는 INVALID_STATE"이다 | 4장 규칙 5 (133줄) | 규칙 5는 환불·재고 복원이 한 번이라고만 정함 | 거부 분기 단언이 달라진다 |
 | TC-X-10a, TC-X-10b | 주문 뒤 상품이 저장소에서 삭제되어도 취소는 성공하고, 삭제된 상품은 건너뛰고 나머지 상품은 복원된다. 삭제는 `ctx.store.products.delete`로 흉내 낸다 | 4장 규칙 3 (129줄), 5장 규칙 2 (142줄), 35줄 | 주문 뒤 상품 삭제는 허용되지만 그때의 취소 동작은 정해져 있지 않음 | 두 테스트가 틀린 쪽이 된다 (util#7을 죽이는 근거) |
 | TC-X-11a, TC-X-11b, TC-E-01m | 주문 뒤 상품이 STOPPED가 되어도 취소·자동 취소는 주문 수량만큼 재고를 복원한다. 상태 변경은 `ctx.store.products.get("P1").status = "STOPPED"`로 흉내 낸다 | 4장 규칙 3·4 (129~131줄), 6장 규칙 1 (152줄), 데이터 구조 35줄 | 복원 규칙에 상품 상태 조건이 없고, STOPPED일 때의 복원 여부는 직접 정해져 있지 않음 | 세 테스트가 틀린 쪽이 된다 (판매 중지 상품은 복원하지 않는다는 결함을 잡는 근거) |
+| TC-H-02 | 정확히 30분이 지난 시점에도 만료 함수를 부르기 전이면 결제가 성공한다 | 3장 규칙 5 (113줄), 6장 규칙 2 (153줄) | 계약서가 "30분이 지난 주문의 결제를 막는다"고 적지 않았음 | 단언이 틀린 쪽이 된다 (만료 함수 호출 전 결제는 허용된다고 읽음) |
 | TC-Q-01d, TC-Q-01e | 상품 가격 변경·삭제를 `ctx.store.products`를 직접 고쳐 흉내 낸다 (17000원, `delete("P2")`) | 5장 규칙 2 (142줄), 35줄 | 계약서가 저장소 구조를 공개해 허용하지만 변경 방식은 정해져 있지 않음 | 저장소 구조가 바뀌면 테스트가 깨진다 |
 | TC-Q-02j | 주문이 없는 사용자의 목록은 `items: []`, `total: 0`이다 | 5장 규칙 4 (144줄), SRS US-09 50줄 | SRS의 "주문 내역이 없습니다"는 화면 문구이고 계약서의 반환 형태는 `items: []` | 단언이 달라진다 |
 
